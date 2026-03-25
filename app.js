@@ -1248,25 +1248,27 @@ async function renderMatrixTable() {
                 const mConfig = STATUS_CONFIG[mStatus];
                 const eConfig = STATUS_CONFIG[eStatus];
                 
-                // Solid colors for matrix cells
+                // Solid colors for matrix cells (inline styles - Tailwind JIT can't compile arbitrary hex)
                 const matrixColors = {
-                    'status-present': 'bg-[#7C9A6B]',
-                    'status-ghost': 'bg-[#C17B74]',
-                    'status-late': 'bg-[#D4A373]',
-                    'status-informed': 'bg-[#8B8BAE]',
-                    'status-absent': 'bg-[#9A9590]',
-                    'status-fake': 'bg-[#A0524D]',
-                    'status-async': 'bg-[#6B8E9B]'
+                    'status-present': '#7C9A6B',
+                    'status-ghost': '#C17B74',
+                    'status-late': '#D4A373',
+                    'status-informed': '#8B8BAE',
+                    'status-absent': '#9A9590',
+                    'status-fake': '#A0524D',
+                    'status-async': '#6B8E9B'
                 };
-                const mColor = mConfig ? (matrixColors[mConfig.color] || 'bg-cream') : 'bg-cream';
-                const eColor = eConfig ? (matrixColors[eConfig.color] || 'bg-cream') : 'bg-cream';
+                const mBg = mConfig ? (matrixColors[mConfig.color] || '#F7F5F0') : '#F7F5F0';
+                const eBg = eConfig ? (matrixColors[eConfig.color] || '#F7F5F0') : '#F7F5F0';
+                const mText = mConfig ? '#fff' : '#9A9590';
+                const eText = eConfig ? '#fff' : '#9A9590';
                 
                 td.innerHTML = `
                     <div class="h-10 flex flex-col rounded overflow-hidden">
-                        <div class="flex-1 ${mColor} flex items-center justify-center text-xs font-bold text-white">
+                        <div class="flex-1 flex items-center justify-center text-xs font-bold" style="background:${mBg};color:${mText}">
                             ${mConfig?.abbr || '-'}
                         </div>
-                        <div class="flex-1 ${eColor} flex items-center justify-center text-xs font-bold text-white">
+                        <div class="flex-1 flex items-center justify-center text-xs font-bold" style="background:${eBg};color:${eText}">
                             ${eConfig?.abbr || '-'}
                         </div>
                     </div>
@@ -1531,6 +1533,7 @@ async function generateReport() {
     const endDate = document.getElementById('reportEnd').value;
     const filter = document.getElementById('reportFilter').value;
     const format = document.querySelector('input[name="format"]:checked').value;
+    const detailLevel = document.querySelector('input[name="detailLevel"]:checked')?.value || 'summary';
     
     if (!startDate || !endDate) {
         showToast('Please select date range', 'error');
@@ -1552,67 +1555,250 @@ async function generateReport() {
         records = records.filter(r => r.morning?.status === 'present_ghost' || r.evening?.status === 'present_ghost');
     } else if (filter === 'fakes') {
         records = records.filter(r => r.morning?.status === 'absent_fake_excuse' || r.evening?.status === 'absent_fake_excuse');
-    } else if (filter === 'unverified') {
-        records = records.filter(r => 
-            (r.morning?.status === 'absent_no_internet' && r.morning?.verification_status === 'unverified') ||
-            (r.evening?.status === 'absent_no_internet' && r.evening?.verification_status === 'unverified')
-        );
     }
     
     switch (format) {
-        case 'pdf': await generatePDF(records, startDate, endDate); break;
+        case 'pdf': await generatePDF(records, startDate, endDate, detailLevel); break;
         case 'confluence': await generateConfluence(records, startDate, endDate); break;
         case 'csv': await generateCSV(records, startDate, endDate); break;
         case 'ghosts': await generateGhostAnalysis(records, startDate, endDate); break;
     }
 }
 
-async function generatePDF(records, startDate, endDate) {
+async function generatePDF(records, startDate, endDate, detailLevel = 'summary') {
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF();
+    const employees = await db.employees.toArray();
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
     
-    doc.setFontSize(18);
-    doc.text('Standup Forensic Report', 14, 20);
+    const statusLabel = (s) => STATUS_CONFIG[s]?.label || s || 'No Response';
+    const statusAbbr = (s) => STATUS_CONFIG[s]?.abbr || '-';
+    
+    // --- COVER PAGE ---
+    doc.setFontSize(24);
+    doc.setTextColor(45, 55, 72);
+    doc.text('Standup Tracker Pro', pageWidth / 2, 50, { align: 'center' });
+    
+    doc.setFontSize(16);
+    doc.setTextColor(100);
+    doc.text(detailLevel === 'complete' ? 'Comprehensive Team Report' : 'Team Summary Report', pageWidth / 2, 65, { align: 'center' });
+    
+    doc.setFontSize(12);
+    doc.text(`${startDate}  to  ${endDate}`, pageWidth / 2, 80, { align: 'center' });
     
     doc.setFontSize(10);
-    doc.setTextColor(100);
-    doc.text(`Date Range: ${startDate} to ${endDate}`, 14, 30);
-    doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 35);
-    doc.text(`Manager: ${AppState.settings.manager_name || 'Not set'}`, 14, 40);
+    doc.text(`Generated: ${new Date().toLocaleString()}`, pageWidth / 2, 95, { align: 'center' });
+    doc.text(`Delivery Lead: ${AppState.settings.manager_name || 'Not set'}`, pageWidth / 2, 102, { align: 'center' });
+    doc.text(`Team Size: ${employees.length} members`, pageWidth / 2, 109, { align: 'center' });
+    doc.text(`Total Records: ${records.length}`, pageWidth / 2, 116, { align: 'center' });
     
-    const tableData = [];
-    for (const record of records) {
-        const employee = await db.employees.get(record.employee_id);
-        const morningNotes = record.morning?.notes || '-';
-        const eveningNotes = record.evening?.notes || '';
-        const combinedNotes = eveningNotes ? `AM: ${morningNotes} | PM: ${eveningNotes}` : morningNotes;
-        tableData.push([
-            record.date,
-            employee?.full_name || 'Unknown',
-            STATUS_CONFIG[record.morning?.status]?.abbr || '-',
-            STATUS_CONFIG[record.evening?.status]?.abbr || '-',
-            record.morning?.claimed_issue !== 'none' ? record.morning.claimed_issue : '-',
-            record.morning?.verification_status || 'N/A',
-            combinedNotes
+    // --- TEAM STATISTICS PAGE ---
+    doc.addPage();
+    doc.setFontSize(16);
+    doc.setTextColor(45, 55, 72);
+    doc.text('Team Statistics Overview', 14, 20);
+    
+    // Calculate team-level stats
+    const uniqueDates = [...new Set(records.map(r => r.date))].sort();
+    const totalDays = uniqueDates.length;
+    let morningPresent = 0, eveningSubmitted = 0, ghostCount = 0, fakeCount = 0, lateCount = 0;
+    
+    for (const r of records) {
+        const ms = r.morning?.status || '';
+        if (ms.startsWith('present')) morningPresent++;
+        if (ms === 'present_ghost') ghostCount++;
+        if (ms === 'absent_fake_excuse') fakeCount++;
+        if (ms === 'present_late') lateCount++;
+        const es = r.evening?.status || '';
+        if (es && es !== 'no_response') eveningSubmitted++;
+    }
+    
+    const statsData = [
+        ['Tracking Period', `${startDate} to ${endDate}`],
+        ['Working Days Tracked', `${totalDays}`],
+        ['Total Records', `${records.length}`],
+        ['Morning Present Rate', `${records.length ? Math.round(morningPresent / records.length * 100) : 0}% (${morningPresent}/${records.length})`],
+        ['Evening Update Rate', `${records.length ? Math.round(eveningSubmitted / records.length * 100) : 0}% (${eveningSubmitted}/${records.length})`],
+        ['Ghost Promises', `${ghostCount}`],
+        ['Fake Excuses', `${fakeCount}`],
+        ['Late Arrivals', `${lateCount}`]
+    ];
+    
+    doc.autoTable({
+        startY: 30,
+        head: [['Metric', 'Value']],
+        body: statsData,
+        styles: { fontSize: 10, cellPadding: 4 },
+        headStyles: { fillColor: [45, 55, 72], textColor: 255 },
+        columnStyles: { 0: { fontStyle: 'bold', cellWidth: 70 } }
+    });
+    
+    // --- PER-EMPLOYEE SUMMARY TABLE ---
+    doc.addPage();
+    doc.setFontSize(16);
+    doc.setTextColor(45, 55, 72);
+    doc.text('Employee Summary', 14, 20);
+    
+    const empSummaryData = [];
+    for (const emp of employees) {
+        const empRecords = records.filter(r => r.employee_id === emp.id);
+        const mPresent = empRecords.filter(r => (r.morning?.status || '').startsWith('present')).length;
+        const eSub = empRecords.filter(r => { const es = r.evening?.status || ''; return es && es !== 'no_response'; }).length;
+        const ghosts = empRecords.filter(r => r.morning?.status === 'present_ghost').length;
+        
+        empSummaryData.push([
+            emp.full_name,
+            emp.role || '-',
+            `${empRecords.length > 0 ? Math.round(mPresent / totalDays * 100) : 0}%`,
+            `${empRecords.length > 0 ? Math.round(eSub / totalDays * 100) : 0}%`,
+            `${ghosts}`,
+            `${emp.trust_score || 100}`
         ]);
     }
     
     doc.autoTable({
-        startY: 50,
-        head: [['Date', 'Name', 'M', 'E', 'Excuse', 'Verified', 'Notes']],
-        body: tableData,
-        styles: { fontSize: 8, font: 'courier', cellPadding: 2 },
+        startY: 30,
+        head: [['Name', 'Role', 'Attendance', 'Eve. Updates', 'Ghosts', 'Trust']],
+        body: empSummaryData,
+        styles: { fontSize: 8, cellPadding: 3 },
         headStyles: { fillColor: [45, 55, 72], textColor: 255 },
         columnStyles: {
-            0: { cellWidth: 22 },
-            1: { cellWidth: 28 },
-            2: { cellWidth: 10 },
-            3: { cellWidth: 10 },
+            0: { cellWidth: 35 },
+            1: { cellWidth: 35 },
+            2: { cellWidth: 25 },
+            3: { cellWidth: 25 },
             4: { cellWidth: 18 },
-            5: { cellWidth: 20 },
-            6: { cellWidth: 'auto' }  // Notes column takes remaining space
+            5: { cellWidth: 18 }
         }
     });
+    
+    if (detailLevel === 'summary') {
+        // --- SUMMARY MODE: Compact daily table ---
+        doc.addPage();
+        doc.setFontSize(16);
+        doc.setTextColor(45, 55, 72);
+        doc.text('Daily Records', 14, 20);
+        
+        const tableData = [];
+        for (const record of records) {
+            const employee = employees.find(e => e.id === record.employee_id);
+            const morningNotes = record.morning?.notes || '';
+            const eveningNotes = record.evening?.notes || '';
+            const combinedNotes = eveningNotes ? `AM: ${morningNotes}\nPM: ${eveningNotes}` : morningNotes;
+            tableData.push([
+                record.date,
+                employee?.full_name || 'Unknown',
+                statusAbbr(record.morning?.status),
+                statusAbbr(record.evening?.status),
+                combinedNotes || '-'
+            ]);
+        }
+        
+        doc.autoTable({
+            startY: 30,
+            head: [['Date', 'Name', 'Morning', 'Evening', 'Notes']],
+            body: tableData,
+            styles: { fontSize: 7, cellPadding: 2, overflow: 'linebreak' },
+            headStyles: { fillColor: [45, 55, 72], textColor: 255 },
+            columnStyles: {
+                0: { cellWidth: 22 },
+                1: { cellWidth: 28 },
+                2: { cellWidth: 14 },
+                3: { cellWidth: 14 },
+                4: { cellWidth: 'auto' }
+            }
+        });
+    } else {
+        // --- COMPLETE MODE: Full per-employee individual reports ---
+        for (const emp of employees) {
+            const empRecords = records.filter(r => r.employee_id === emp.id).sort((a, b) => a.date.localeCompare(b.date));
+            
+            doc.addPage();
+            
+            // Employee header
+            doc.setFontSize(16);
+            doc.setTextColor(45, 55, 72);
+            doc.text(`${emp.full_name}`, 14, 20);
+            doc.setFontSize(10);
+            doc.setTextColor(100);
+            doc.text(`Role: ${emp.role || '-'}  |  Team: ${emp.team || '-'}  |  Trust Score: ${emp.trust_score || 100}`, 14, 28);
+            if (emp.email) doc.text(`Email: ${emp.email}`, 14, 34);
+            
+            // Individual stats
+            const mPresent = empRecords.filter(r => (r.morning?.status || '').startsWith('present')).length;
+            const eSub = empRecords.filter(r => { const es = r.evening?.status || ''; return es && es !== 'no_response'; }).length;
+            const ghosts = empRecords.filter(r => r.morning?.status === 'present_ghost').length;
+            const fakes = empRecords.filter(r => r.morning?.status === 'absent_fake_excuse').length;
+            const lates = empRecords.filter(r => r.morning?.status === 'present_late').length;
+            
+            const empStatsData = [
+                ['Days Tracked', `${totalDays}`],
+                ['Morning Present', `${mPresent}/${totalDays} (${totalDays ? Math.round(mPresent / totalDays * 100) : 0}%)`],
+                ['Evening Updates', `${eSub}/${totalDays} (${totalDays ? Math.round(eSub / totalDays * 100) : 0}%)`],
+                ['Ghost Promises', `${ghosts}`],
+                ['Fake Excuses', `${fakes}`],
+                ['Late Arrivals', `${lates}`]
+            ];
+            
+            let startY = emp.email ? 40 : 34;
+            doc.autoTable({
+                startY: startY,
+                head: [['Metric', 'Value']],
+                body: empStatsData,
+                styles: { fontSize: 9, cellPadding: 3 },
+                headStyles: { fillColor: [107, 142, 155], textColor: 255 },
+                columnStyles: { 0: { fontStyle: 'bold', cellWidth: 50 } },
+                tableWidth: 120
+            });
+            
+            // Daily records with FULL notes
+            if (empRecords.length > 0) {
+                const dailyData = [];
+                for (const r of empRecords) {
+                    const morningNotes = r.morning?.notes || '-';
+                    const eveningNotes = r.evening?.notes || '-';
+                    
+                    dailyData.push([
+                        r.date,
+                        statusLabel(r.morning?.status),
+                        morningNotes,
+                        statusLabel(r.evening?.status),
+                        eveningNotes
+                    ]);
+                }
+                
+                doc.autoTable({
+                    startY: doc.lastAutoTable.finalY + 10,
+                    head: [['Date', 'Morning Status', 'Morning Notes', 'Evening Status', 'Evening Notes']],
+                    body: dailyData,
+                    styles: { fontSize: 7, cellPadding: 3, overflow: 'linebreak', minCellHeight: 10 },
+                    headStyles: { fillColor: [45, 55, 72], textColor: 255 },
+                    columnStyles: {
+                        0: { cellWidth: 20 },
+                        1: { cellWidth: 22 },
+                        2: { cellWidth: 'auto' },
+                        3: { cellWidth: 22 },
+                        4: { cellWidth: 'auto' }
+                    }
+                });
+            } else {
+                doc.setFontSize(10);
+                doc.setTextColor(150);
+                doc.text('No attendance records in this period.', 14, doc.lastAutoTable.finalY + 15);
+            }
+        }
+    }
+    
+    // Add page numbers
+    const totalPages = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= totalPages; i++) {
+        doc.setPage(i);
+        doc.setFontSize(8);
+        doc.setTextColor(150);
+        doc.text(`Page ${i} of ${totalPages}`, pageWidth - 30, pageHeight - 10);
+        doc.text('Standup Tracker Pro', 14, pageHeight - 10);
+    }
     
     doc.save(`standup-report-${startDate}-to-${endDate}.pdf`);
     showToast('PDF report downloaded', 'success');
@@ -2058,6 +2244,7 @@ function addAIResponse(title, icon, content, isLoading = false) {
         }).catch(() => {});
     }
 
+    if (!area) return card;
     area.insertBefore(card, area.firstChild);
     lucide.createIcons();
     return card;
@@ -2132,7 +2319,10 @@ async function handleAIChatSend(input) {
 
     try {
         const teamData = await buildTeamDataForAI(14);
-        const response = await askAI(question, teamData, 'chat');
+        const today = formatDate(new Date());
+        const currentTime = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+        const enrichedQuestion = `[Today: ${today}, Current time: ${currentTime}] ${question}`;
+        const response = await askAI(enrichedQuestion, teamData, 'chat');
         loadingCard.remove();
         addAIResponse(question, 'message-circle', response || 'No response from AI');
     } catch (err) {
@@ -2159,7 +2349,9 @@ async function handleAIEmployeeAsk(employee) {
             return;
         }
         
-        const question = `Brief overview of ${employee.full_name}: attendance summary, key notes, concerns, and 2 questions for next standup. Be concise.`;
+        const today = formatDate(new Date());
+        const currentTime = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+        const question = `Overview of ${employee.full_name} as of ${today} (current time: ${currentTime}). Analyze their WORK: what they've been working on, what they promised vs delivered, any recurring patterns. Also: attendance summary, concerns, and 2 specific work-related questions for next standup.`;
         const response = await askAI(question, { employee: empData, today: AppState.currentDate }, 'chat');
         loadingCard.remove();
         addAIResponse(`About ${employee.full_name}`, 'user', response || 'No response');
@@ -2181,7 +2373,8 @@ async function handleMorningPrep() {
             return;
         }
         const today = formatDate(new Date());
-        const question = `Prepare me for today's 10 AM standup. TODAY is ${today}. Cover ALL ${teamData.employees.length} team members. Use their latest notes to generate specific follow-up questions.`;
+        const currentTime = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+        const question = `Prepare me for today's 10 AM standup. TODAY is ${today}, current time is ${currentTime}. The standup has NOT happened yet — do NOT say anyone missed today's standup. Cover ALL ${teamData.employees.length} team members. Use their PREVIOUS days' notes to generate specific follow-up questions. Track what they PROMISED to do vs what they actually DELIVERED.`;
         const response = await askAI(question, teamData, 'morning_prep');
         loadingCard.remove();
         addAIResponse('Morning Standup Prep (10 AM)', 'sunrise', response || 'No response');
@@ -2203,7 +2396,8 @@ async function handleEveningPrep() {
             return;
         }
         const today = formatDate(new Date());
-        const question = `Prepare me for today's 6:30 PM evening update. TODAY is ${today}. Cover ALL present team members and verify their morning commitments.`;
+        const currentTime = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+        const question = `Prepare me for today's 6:30 PM evening update. TODAY is ${today}, current time is ${currentTime}. Cover ALL present team members. For each person, show what they COMMITTED to this morning (from their mn notes) and what specific tasks I should verify they completed.`;
         const response = await askAI(question, teamData, 'evening_prep');
         loadingCard.remove();
         addAIResponse('Evening Update Prep (6:30 PM)', 'sunset', response || 'No response');
@@ -2225,7 +2419,8 @@ async function handleFridayReview() {
             return;
         }
         const today = formatDate(new Date());
-        const question = `Friday weekly review for week ending ${today}. Cover ALL ${teamData.employees.length} team members + team summary.`;
+        const currentTime = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+        const question = `Friday weekly review for week ending ${today} (current time: ${currentTime}). Cover ALL ${teamData.employees.length} team members. For each person, analyze their WORK across the week — what they promised vs what they delivered. End with team summary and action items.`;
         const response = await askAI(question, teamData, 'friday_review');
         loadingCard.remove();
         addAIResponse('Friday Weekly Review Prep (4:30 PM)', 'calendar-check', response || 'No response');
@@ -2247,7 +2442,8 @@ async function handleTeamSummary() {
             return;
         }
         const today = formatDate(new Date());
-        const question = `Team performance overview for week ending ${today}. Cover ALL ${teamData.employees.length} members.`;
+        const currentTime = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+        const question = `Team performance overview as of ${today} (current time: ${currentTime}). Cover ALL ${teamData.employees.length} members. Analyze their WORK CONTENT — what they've been working on, delivery patterns, and collaboration patterns.`;
         const response = await askAI(question, teamData, 'team_summary');
         loadingCard.remove();
         addAIResponse('Team Overview - This Week', 'users', response || 'No response');
@@ -2269,7 +2465,8 @@ async function handleConcerns() {
             return;
         }
         const today = formatDate(new Date());
-        const question = `Team red flags and concerns up to ${today}. Cover all members. Rank by severity.`;
+        const currentTime = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+        const question = `Team concerns as of ${today} (current time: ${currentTime}). Focus on: broken promises (said they'd do X but didn't), recurring blockers, low engagement, and trust issues. Rank by severity with specific evidence.`;
         const response = await askAI(question, teamData, 'concerns');
         loadingCard.remove();
         addAIResponse('Flagged Concerns', 'alert-triangle', response || 'No response');
@@ -2293,7 +2490,7 @@ async function handleMonthlyReport() {
             return;
         }
         const today = formatDate(new Date());
-        const question = `Full MONTHLY REPORT for ${monthName} as of ${today}. Cover ALL ${teamData.employees.length} team members with individual ratings and stats. Include overall team metrics and best/worst performers.`;
+        const question = `Full MONTHLY REPORT for ${monthName} as of ${today}. Cover ALL ${teamData.employees.length} team members with individual ratings, work delivered, promises vs delivery track record, and attendance stats. Include overall team metrics.`;
         const response = await askAI(question, teamData, 'monthly_report');
         loadingCard.remove();
         addAIResponse(`Monthly Report — ${monthName}`, 'bar-chart-3', response || 'No response');
@@ -2317,7 +2514,7 @@ async function handleBestPerformer() {
             return;
         }
         const today = formatDate(new Date());
-        const question = `Determine the BEST PERFORMER for ${monthName} (up to ${today}) from ${teamData.employees.length} team members. Rank all employees by overall performance and give a detailed breakdown of why the top performer earned the title.`;
+        const question = `Determine the BEST PERFORMER for ${monthName} (up to ${today}) from ${teamData.employees.length} team members. Rank ALL employees. Evaluate based on: attendance, work quality (depth of notes, specific tasks), delivery rate (promises kept), and reliability (trust score, no ghost/fake). Give detailed breakdown.`;
         const response = await askAI(question, teamData, 'best_performer');
         loadingCard.remove();
         addAIResponse(`Best Performer — ${monthName}`, 'trophy', response || 'No response');

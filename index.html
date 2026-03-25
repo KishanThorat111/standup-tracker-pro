@@ -696,8 +696,27 @@
                         <option value="problems">Only Problems</option>
                         <option value="ghosts">Only Ghosts</option>
                         <option value="fakes">Only Fakes</option>
-                        <option value="unverified">Only Unverified</option>
                     </select>
+                </div>
+
+                <div>
+                    <label class="block text-sm text-slate mb-2">Detail Level</label>
+                    <div class="grid grid-cols-2 gap-3">
+                        <label class="flex items-center gap-3 p-3 bg-cream border border-border rounded-lg cursor-pointer hover:border-action transition-colors">
+                            <input type="radio" name="detailLevel" value="summary" checked class="accent-action w-4 h-4">
+                            <div>
+                                <span class="text-sm font-medium block">Summary</span>
+                                <span class="text-xs text-taupe">Compact table view</span>
+                            </div>
+                        </label>
+                        <label class="flex items-center gap-3 p-3 bg-cream border border-border rounded-lg cursor-pointer hover:border-action transition-colors">
+                            <input type="radio" name="detailLevel" value="complete" class="accent-action w-4 h-4">
+                            <div>
+                                <span class="text-sm font-medium block">Complete</span>
+                                <span class="text-xs text-taupe">Full data + analytics</span>
+                            </div>
+                        </label>
+                    </div>
                 </div>
                 
                 <div>
