@@ -236,6 +236,18 @@
     </style>
 </head>
 <body>
+    <!-- Loading Screen -->
+    <div id="loadingScreen" class="fixed inset-0 bg-cream z-[999] flex flex-col items-center justify-center transition-opacity duration-300">
+        <div class="w-16 h-16 bg-action rounded-2xl flex items-center justify-center mb-4 shadow-warm animate-pulse">
+            <i data-lucide="clipboard-check" class="w-8 h-8 text-white"></i>
+        </div>
+        <p class="text-charcoal font-semibold">Loading Standup Tracker Pro...</p>
+        <div class="mt-3 w-48 h-1 bg-border rounded-full overflow-hidden">
+            <div class="h-full bg-action rounded-full animate-[loading_1.5s_ease-in-out_infinite]" style="width:60%"></div>
+        </div>
+    </div>
+    <style>@keyframes loading{0%{transform:translateX(-100%)}50%{transform:translateX(60%)}100%{transform:translateX(200%)}}</style>
+
     <!-- Auth Screen -->
     <div id="authScreen" class="min-h-screen flex items-center justify-center p-4 bg-cream">
         <div class="bg-card rounded-xl shadow-warm-lg border border-border p-8 w-full max-w-md">

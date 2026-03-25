@@ -1673,7 +1673,7 @@ async function syncFromCloud() {
         const data = await apiCall('/sync/pull');
 
         // Only replace local data if cloud has data
-        if (data.employees?.length || data.attendance_records?.length) {
+        if (data.employees?.length || data.attendance_records?.length || data.holidays?.length) {
             if (data.employees?.length) {
                 await db.employees.clear();
                 await db.employees.bulkAdd(data.employees);
@@ -2655,6 +2655,7 @@ function showSettingsModal() {
             employees: await db.employees.toArray(),
             attendance_records: await db.attendance_records.toArray(),
             app_settings: await db.app_settings.toArray(),
+            holidays: await db.holidays.toArray(),
             exported_at: new Date().toISOString()
         };
         
@@ -2694,9 +2695,11 @@ function showSettingsModal() {
             if (confirm('This will replace all existing data. Continue?')) {
                 await db.employees.clear();
                 await db.attendance_records.clear();
+                await db.holidays.clear();
                 
                 if (data.employees) await db.employees.bulkAdd(data.employees);
                 if (data.attendance_records) await db.attendance_records.bulkAdd(data.attendance_records);
+                if (data.holidays) await db.holidays.bulkAdd(data.holidays);
                 
                 await AppState.loadEmployees();
                 showToast('Database imported', 'success');
@@ -2864,7 +2867,9 @@ function initKeyboardShortcuts() {
 async function registerServiceWorker() {
     if ('serviceWorker' in navigator) {
         try {
-            await navigator.serviceWorker.register('sw.js');
+            const reg = await navigator.serviceWorker.register('sw.js');
+            // Force check for updates immediately
+            reg.update();
             console.log('Service Worker registered');
         } catch (error) {
             console.log('SW registration failed:', error);
@@ -2881,9 +2886,12 @@ async function initApp() {
         const dbReady = await initDatabase();
         if (!dbReady) return;
         
-        await AppState.loadEmployees();
-        await AppState.loadSettings();
-        await AppState.loadAttendanceForDate(AppState.currentDate);
+        // Load all data in parallel for faster startup
+        await Promise.all([
+            AppState.loadEmployees(),
+            AppState.loadSettings(),
+            AppState.loadAttendanceForDate(AppState.currentDate)
+        ]);
         
         initNavigation();
         initKeyboardShortcuts();
@@ -2910,6 +2918,14 @@ async function initApp() {
     }
 }
 
+function hideLoadingScreen() {
+    const ls = document.getElementById('loadingScreen');
+    if (ls) {
+        ls.style.opacity = '0';
+        setTimeout(() => ls.remove(), 300);
+    }
+}
+
 async function startApp() {
     if (AuthState.isAuthenticated()) {
         try {
@@ -2923,6 +2939,7 @@ async function startApp() {
     } else {
         showAuthScreen();
     }
+    hideLoadingScreen();
 }
 
 document.addEventListener('DOMContentLoaded', startApp);
