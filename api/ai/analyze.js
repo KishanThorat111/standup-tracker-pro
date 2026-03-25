@@ -42,7 +42,10 @@ Please provide:
                     ],
                     generationConfig: {
                         temperature: 0.7,
-                        maxOutputTokens: 4096
+                        maxOutputTokens: 16384
+                    },
+                    thinkingConfig: {
+                        thinkingBudget: 2048
                     }
                 })
             }
@@ -56,7 +59,8 @@ Please provide:
         }
 
         const data = await response.json();
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No analysis generated';
+        const parts = data.candidates?.[0]?.content?.parts || [];
+        const text = parts.filter(p => p.text && !p.thought).map(p => p.text).join('\n') || parts[parts.length - 1]?.text || 'No analysis generated';
 
         res.json({ analysis: text });
     } catch (err) {

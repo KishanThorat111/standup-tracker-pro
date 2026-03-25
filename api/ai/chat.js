@@ -173,7 +173,10 @@ ${JSON.stringify(teamData)}`;
                     ],
                     generationConfig: {
                         temperature: 0.7,
-                        maxOutputTokens: 8192
+                        maxOutputTokens: 65536
+                    },
+                    thinkingConfig: {
+                        thinkingBudget: 4096
                     }
                 })
             }
@@ -187,7 +190,8 @@ ${JSON.stringify(teamData)}`;
         }
 
         const data = await response.json();
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response generated';
+        const parts = data.candidates?.[0]?.content?.parts || [];
+        const text = parts.filter(p => p.text && !p.thought).map(p => p.text).join('\n') || parts[parts.length - 1]?.text || 'No response generated';
 
         res.json({ response: text });
     } catch (err) {

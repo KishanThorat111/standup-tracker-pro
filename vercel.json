@@ -29,5 +29,10 @@
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ],
   "cleanUrls": true,
-  "trailingSlash": false
+  "trailingSlash": false,
+  "functions": {
+    "api/ai/**/*.js": {
+      "maxDuration": 60
+    }
+  }
 }
