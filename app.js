@@ -273,7 +273,10 @@ function generateUUID() {
 }
 
 function formatDate(date) {
-    return date.toISOString().split('T')[0];
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
 }
 
 function formatDateTime(isoString) {
@@ -664,11 +667,17 @@ async function saveAttendance(employeeId, session, data) {
     if (data.status && !record[session].timestamp) {
         record[session].timestamp = new Date().toISOString();
         
-        // Calculate response lag for async statuses
+        // Calculate response lag for async statuses (only if entering for today)
         if (['present_async', 'remote_async_deferred'].includes(data.status)) {
-            const standupTime = new Date(date + 'T' + STANDUP_TIME);
-            const actualTime = new Date();
-            record[session].response_lag_minutes = calculateLagMinutes(standupTime.toISOString(), actualTime.toISOString());
+            const today = formatDate(new Date());
+            if (date === today) {
+                const standupTime = new Date(date + 'T' + STANDUP_TIME);
+                const actualTime = new Date();
+                const lag = calculateLagMinutes(standupTime.toISOString(), actualTime.toISOString());
+                record[session].response_lag_minutes = Math.max(0, Math.min(lag, 480)); // Cap at 8 hours
+            } else {
+                record[session].response_lag_minutes = 0; // Don't calculate lag for past dates
+            }
         }
     }
     
@@ -943,7 +952,7 @@ function createEmployeeCard(employee, record) {
 }
 
 async function loadPreviousHistory(cardEl, employeeId) {
-    const today = new Date(AppState.currentDate);
+    const today = new Date(AppState.currentDate + 'T00:00:00');
     const historyDays = [];
     for (let i = 1; i <= 3; i++) {
         const d = new Date(today);
@@ -1003,10 +1012,11 @@ async function loadPreviousHistory(cardEl, employeeId) {
 
 function applyStatusColor(select, status) {
     const config = STATUS_CONFIG[status];
+    const baseClass = select.classList.contains('evening-status') ? 'evening-status' : 'morning-status';
     if (config) {
-        select.className = `morning-status select-field flex-1 min-w-[180px] text-sm ${config.color}`;
+        select.className = `${baseClass} select-field flex-1 min-w-[180px] text-sm ${config.color}`;
     } else {
-        select.className = 'morning-status select-field flex-1 min-w-[180px] text-sm';
+        select.className = `${baseClass} select-field flex-1 min-w-[180px] text-sm`;
     }
 }
 
@@ -1238,12 +1248,25 @@ async function renderMatrixTable() {
                 const mConfig = STATUS_CONFIG[mStatus];
                 const eConfig = STATUS_CONFIG[eStatus];
                 
+                // Solid colors for matrix cells
+                const matrixColors = {
+                    'status-present': 'bg-[#7C9A6B]',
+                    'status-ghost': 'bg-[#C17B74]',
+                    'status-late': 'bg-[#D4A373]',
+                    'status-informed': 'bg-[#8B8BAE]',
+                    'status-absent': 'bg-[#9A9590]',
+                    'status-fake': 'bg-[#A0524D]',
+                    'status-async': 'bg-[#6B8E9B]'
+                };
+                const mColor = mConfig ? (matrixColors[mConfig.color] || 'bg-cream') : 'bg-cream';
+                const eColor = eConfig ? (matrixColors[eConfig.color] || 'bg-cream') : 'bg-cream';
+                
                 td.innerHTML = `
                     <div class="h-10 flex flex-col rounded overflow-hidden">
-                        <div class="flex-1 ${mConfig?.color || ''} flex items-center justify-center text-xs font-bold text-white">
+                        <div class="flex-1 ${mColor} flex items-center justify-center text-xs font-bold text-white">
                             ${mConfig?.abbr || '-'}
                         </div>
-                        <div class="flex-1 ${eConfig?.color || ''} flex items-center justify-center text-xs font-bold text-white">
+                        <div class="flex-1 ${eColor} flex items-center justify-center text-xs font-bold text-white">
                             ${eConfig?.abbr || '-'}
                         </div>
                     </div>
@@ -1560,6 +1583,9 @@ async function generatePDF(records, startDate, endDate) {
     const tableData = [];
     for (const record of records) {
         const employee = await db.employees.get(record.employee_id);
+        const morningNotes = record.morning?.notes || '-';
+        const eveningNotes = record.evening?.notes || '';
+        const combinedNotes = eveningNotes ? `AM: ${morningNotes} | PM: ${eveningNotes}` : morningNotes;
         tableData.push([
             record.date,
             employee?.full_name || 'Unknown',
@@ -1567,7 +1593,7 @@ async function generatePDF(records, startDate, endDate) {
             STATUS_CONFIG[record.evening?.status]?.abbr || '-',
             record.morning?.claimed_issue !== 'none' ? record.morning.claimed_issue : '-',
             record.morning?.verification_status || 'N/A',
-            record.morning?.notes?.substring(0, 25) || '-'
+            combinedNotes
         ]);
     }
     
@@ -1575,8 +1601,17 @@ async function generatePDF(records, startDate, endDate) {
         startY: 50,
         head: [['Date', 'Name', 'M', 'E', 'Excuse', 'Verified', 'Notes']],
         body: tableData,
-        styles: { fontSize: 9, font: 'courier' },
-        headStyles: { fillColor: [45, 55, 72], textColor: 255 }
+        styles: { fontSize: 8, font: 'courier', cellPadding: 2 },
+        headStyles: { fillColor: [45, 55, 72], textColor: 255 },
+        columnStyles: {
+            0: { cellWidth: 22 },
+            1: { cellWidth: 28 },
+            2: { cellWidth: 10 },
+            3: { cellWidth: 10 },
+            4: { cellWidth: 18 },
+            5: { cellWidth: 20 },
+            6: { cellWidth: 'auto' }  // Notes column takes remaining space
+        }
     });
     
     doc.save(`standup-report-${startDate}-to-${endDate}.pdf`);
@@ -1595,9 +1630,11 @@ async function generateConfluence(records, startDate, endDate) {
         const e = STATUS_CONFIG[record.evening?.status]?.abbr || '-';
         const status = record.morning?.status === 'present_ghost' ? 'Ghost Promise' : 
                       record.morning?.status === 'absent_fake_excuse' ? 'Fake Excuse' : 'Clean';
-        const notes = (record.morning?.notes || '').replace(/\|/g, '\\|').substring(0, 30);
+        const notes = (record.morning?.notes || '').replace(/\|/g, '\\|');
+        const eNotes = (record.evening?.notes || '').replace(/\|/g, '\\|');
+        const combinedNotes = eNotes ? `AM: ${notes} / PM: ${eNotes}` : notes;
         
-        content += `| ${record.date} | ${employee?.full_name || 'Unknown'} | ${m} | ${e} | ${status} | ${notes} |\n`;
+        content += `| ${record.date} | ${employee?.full_name || 'Unknown'} | ${m} | ${e} | ${status} | ${combinedNotes} |\n`;
     }
     
     downloadFile(content, `standup-confluence-${startDate}.txt`, 'text/plain');
@@ -2578,34 +2615,45 @@ async function showEmployeeProfile(employeeId) {
     
     records.sort((a, b) => b.date.localeCompare(a.date));
     
-    let presentCount = 0, ghostCount = 0, fakeCount = 0, totalLag = 0, lagCount = 0;
+    let morningPresent = 0, ghostCount = 0, fakeCount = 0, totalLag = 0, lagCount = 0;
     let absentCount = 0, lateCount = 0;
     
     records.forEach(r => {
+        // Morning attendance (primary indicator)
+        const ms = r.morning?.status;
+        if (ms && ms !== 'absent_no_response' && ms !== 'absent_no_internet' && ms !== 'absent_fake_excuse') {
+            morningPresent++;
+        }
+        if (ms === 'present_ghost') ghostCount++;
+        if (ms === 'absent_fake_excuse') fakeCount++;
+        if (ms === 'present_late') lateCount++;
+        if (ms?.includes('absent')) absentCount++;
+        
+        // Evening stats
+        const es = r.evening?.status;
+        if (es === 'present_ghost') ghostCount++;
+        if (es === 'absent_fake_excuse') fakeCount++;
+        
+        // Lag (from both sessions, cap at 480 min)
         ['morning', 'evening'].forEach(s => {
-            const status = r[s]?.status;
-            if (status?.includes('present')) presentCount++;
-            if (status === 'present_ghost') ghostCount++;
-            if (status === 'absent_fake_excuse') fakeCount++;
-            if (status === 'present_late') lateCount++;
-            if (status?.includes('absent')) absentCount++;
-            if (r[s]?.response_lag_minutes > 0) {
-                totalLag += r[s].response_lag_minutes;
+            const lag = r[s]?.response_lag_minutes;
+            if (lag > 0 && lag <= 480) {
+                totalLag += lag;
                 lagCount++;
             }
         });
     });
     
-    const total = records.length * 2 || 1;
-    const attendanceRate = Math.round((presentCount / total) * 100);
-    const ghostRate = Math.round((ghostCount / total) * 100);
-    const fakeRate = Math.round((fakeCount / total) * 100);
+    const totalDays = records.length || 1;
+    const attendanceRate = Math.round((morningPresent / totalDays) * 100);
+    const ghostRate = Math.round((ghostCount / totalDays) * 100);
+    const fakeRate = Math.round((fakeCount / totalDays) * 100);
     const avgLag = lagCount > 0 ? Math.round(totalLag / lagCount) : 0;
     
     // Weekly breakdown
     const weekMap = {};
     records.forEach(r => {
-        const d = new Date(r.date);
+        const d = new Date(r.date + 'T00:00:00');
         const weekStart = new Date(d);
         weekStart.setDate(d.getDate() - d.getDay());
         const weekKey = formatDate(weekStart);
@@ -2665,7 +2713,7 @@ async function showEmployeeProfile(employeeId) {
                 <p class="text-xs text-taupe">Ghosts</p>
             </div>
             <div class="bg-cream border border-border rounded-lg p-3 text-center">
-                <p class="text-2xl font-bold text-amber">${avgLag}m</p>
+                <p class="text-2xl font-bold text-amber">${avgLag >= 60 ? Math.floor(avgLag / 60) + 'h ' + (avgLag % 60) + 'm' : avgLag + 'm'}</p>
                 <p class="text-xs text-taupe">Avg Lag</p>
             </div>
         </div>
@@ -2775,7 +2823,7 @@ async function showEmployeeProfile(employeeId) {
         if (analysis) {
             const resultDiv = content.querySelector('.ai-result');
             resultDiv.classList.remove('hidden');
-            resultDiv.querySelector('.ai-result-text').textContent = analysis;
+            resultDiv.querySelector('.ai-result-text').innerHTML = renderMarkdown(analysis);
         }
     });
     
