@@ -1576,22 +1576,59 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
     const statusAbbr = (s) => STATUS_CONFIG[s]?.abbr || '-';
     
     // --- COVER PAGE ---
-    doc.setFontSize(24);
-    doc.setTextColor(45, 55, 72);
-    doc.text('Standup Tracker Pro', pageWidth / 2, 50, { align: 'center' });
+    // Dark header band
+    doc.setFillColor(45, 55, 72);
+    doc.rect(0, 0, pageWidth, 85, 'F');
     
-    doc.setFontSize(16);
-    doc.setTextColor(100);
-    doc.text(detailLevel === 'complete' ? 'Comprehensive Team Report' : 'Team Summary Report', pageWidth / 2, 65, { align: 'center' });
+    // Accent line
+    doc.setFillColor(193, 123, 116);
+    doc.rect(0, 85, pageWidth, 3, 'F');
+    
+    // Title text on dark background
+    doc.setFontSize(28);
+    doc.setTextColor(255, 255, 255);
+    doc.text('Standup Tracker Pro', pageWidth / 2, 35, { align: 'center' });
+    
+    doc.setFontSize(14);
+    doc.setTextColor(212, 163, 115);
+    doc.text(detailLevel === 'complete' ? 'Comprehensive Team Report' : 'Team Summary Report', pageWidth / 2, 50, { align: 'center' });
     
     doc.setFontSize(12);
-    doc.text(`${startDate}  to  ${endDate}`, pageWidth / 2, 80, { align: 'center' });
+    doc.setTextColor(200, 200, 210);
+    doc.text(`${startDate}  to  ${endDate}`, pageWidth / 2, 68, { align: 'center' });
     
-    doc.setFontSize(10);
-    doc.text(`Generated: ${new Date().toLocaleString()}`, pageWidth / 2, 95, { align: 'center' });
-    doc.text(`Delivery Lead: ${AppState.settings.manager_name || 'Not set'}`, pageWidth / 2, 102, { align: 'center' });
-    doc.text(`Team Size: ${employees.length} members`, pageWidth / 2, 109, { align: 'center' });
-    doc.text(`Total Records: ${records.length}`, pageWidth / 2, 116, { align: 'center' });
+    // Info cards below the header
+    const infoY = 105;
+    const cardW = 80;
+    const gap = 10;
+    const startX = (pageWidth - (cardW * 2 + gap)) / 2;
+    
+    // Card backgrounds
+    doc.setFillColor(245, 243, 240);
+    doc.roundedRect(startX, infoY, cardW, 40, 3, 3, 'F');
+    doc.roundedRect(startX + cardW + gap, infoY, cardW, 40, 3, 3, 'F');
+    doc.roundedRect(startX, infoY + 50, cardW, 40, 3, 3, 'F');
+    doc.roundedRect(startX + cardW + gap, infoY + 50, cardW, 40, 3, 3, 'F');
+    
+    // Card content
+    doc.setFontSize(9);
+    doc.setTextColor(130);
+    doc.text('Delivery Lead', startX + cardW / 2, infoY + 12, { align: 'center' });
+    doc.text('Team Size', startX + cardW + gap + cardW / 2, infoY + 12, { align: 'center' });
+    doc.text('Total Records', startX + cardW / 2, infoY + 62, { align: 'center' });
+    doc.text('Generated', startX + cardW + gap + cardW / 2, infoY + 62, { align: 'center' });
+    
+    doc.setFontSize(13);
+    doc.setTextColor(45, 55, 72);
+    doc.text(AppState.settings.manager_name || 'Not set', startX + cardW / 2, infoY + 28, { align: 'center' });
+    doc.text(`${employees.length} Members`, startX + cardW + gap + cardW / 2, infoY + 28, { align: 'center' });
+    doc.text(`${records.length}`, startX + cardW / 2, infoY + 78, { align: 'center' });
+    doc.text(new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }), startX + cardW + gap + cardW / 2, infoY + 78, { align: 'center' });
+    
+    // Footer on cover
+    doc.setFontSize(8);
+    doc.setTextColor(160);
+    doc.text('Forensic Attendance System', pageWidth / 2, pageHeight - 20, { align: 'center' });
     
     // --- TEAM STATISTICS PAGE ---
     doc.addPage();
@@ -1683,29 +1720,31 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
         const tableData = [];
         for (const record of records) {
             const employee = employees.find(e => e.id === record.employee_id);
+            const morningStatus = statusLabel(record.morning?.status);
+            const eveningStatus = statusLabel(record.evening?.status);
             const morningNotes = record.morning?.notes || '';
             const eveningNotes = record.evening?.notes || '';
-            const combinedNotes = eveningNotes ? `AM: ${morningNotes}\nPM: ${eveningNotes}` : morningNotes;
+            const combinedNotes = eveningNotes ? `Morning: ${morningNotes}\nEvening: ${eveningNotes}` : (morningNotes || '-');
             tableData.push([
                 record.date,
                 employee?.full_name || 'Unknown',
-                statusAbbr(record.morning?.status),
-                statusAbbr(record.evening?.status),
-                combinedNotes || '-'
+                morningStatus,
+                eveningStatus,
+                combinedNotes
             ]);
         }
         
         doc.autoTable({
             startY: 30,
-            head: [['Date', 'Name', 'Morning', 'Evening', 'Notes']],
+            head: [['Date', 'Name', 'Morning Status', 'Evening Status', 'Notes']],
             body: tableData,
             styles: { fontSize: 7, cellPadding: 2, overflow: 'linebreak' },
             headStyles: { fillColor: [45, 55, 72], textColor: 255 },
             columnStyles: {
-                0: { cellWidth: 22 },
-                1: { cellWidth: 28 },
-                2: { cellWidth: 14 },
-                3: { cellWidth: 14 },
+                0: { cellWidth: 20 },
+                1: { cellWidth: 26 },
+                2: { cellWidth: 22 },
+                3: { cellWidth: 22 },
                 4: { cellWidth: 'auto' }
             }
         });
