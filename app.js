@@ -848,6 +848,9 @@ function createEmployeeCard(employee, record) {
         
         await saveAttendance(employee.id, 'morning', updates);
         applyStatusColor(morningStatus, status);
+        // Enable evening fields now that morning has a status
+        eveningStatus.disabled = false;
+        eveningNotes.disabled = false;
         updateInsights();
     });
     
@@ -1012,6 +1015,10 @@ async function handleQuickMark(e) {
     if (!value) return;
     
     if (value === 'clear') {
+        if (!confirm(`Clear ALL attendance records for ${AppState.currentDate}? This cannot be undone.`)) {
+            e.target.value = '';
+            return;
+        }
         for (const employee of AppState.employees) {
             await db.attendance_records.delete([employee.id, AppState.currentDate]);
         }
@@ -1942,6 +1949,8 @@ function renderAIAssistant() {
     document.getElementById('aiFridayReview').addEventListener('click', handleFridayReview);
     document.getElementById('aiTeamSummary').addEventListener('click', handleTeamSummary);
     document.getElementById('aiConcerns').addEventListener('click', handleConcerns);
+    document.getElementById('aiMonthlyReport').addEventListener('click', handleMonthlyReport);
+    document.getElementById('aiBestPerformer').addEventListener('click', handleBestPerformer);
 
     // Chat input
     const chatInput = document.getElementById('aiChatInput');
@@ -2230,6 +2239,54 @@ async function handleConcerns() {
     } catch (err) {
         loadingCard.remove();
         addAIResponse('Flagged Concerns', 'alert-circle', 'Error: ' + err.message);
+    }
+}
+
+async function handleMonthlyReport() {
+    const now = new Date();
+    const monthName = now.toLocaleString('default', { month: 'long', year: 'numeric' });
+    const loadingCard = addAIResponse(`Monthly Report — ${monthName}`, 'bar-chart-3', '', true);
+
+    try {
+        const teamData = await buildTeamDataForAI(31);
+        const hasData = teamData.employees.some(e => e.records.length > 0);
+        if (!hasData) {
+            loadingCard.remove();
+            addAIResponse(`Monthly Report — ${monthName}`, 'bar-chart-3', 'No data for this month yet. Start tracking attendance to generate monthly reports.');
+            return;
+        }
+        const today = formatDate(new Date());
+        const question = `Full MONTHLY REPORT for ${monthName} as of ${today}. Cover ALL ${teamData.employees.length} team members with individual ratings and stats. Include overall team metrics and best/worst performers.`;
+        const response = await askAI(question, teamData, 'monthly_report');
+        loadingCard.remove();
+        addAIResponse(`Monthly Report — ${monthName}`, 'bar-chart-3', response || 'No response');
+    } catch (err) {
+        loadingCard.remove();
+        addAIResponse('Monthly Report', 'alert-circle', 'Error: ' + err.message);
+    }
+}
+
+async function handleBestPerformer() {
+    const now = new Date();
+    const monthName = now.toLocaleString('default', { month: 'long', year: 'numeric' });
+    const loadingCard = addAIResponse(`Best Performer — ${monthName}`, 'trophy', '', true);
+
+    try {
+        const teamData = await buildTeamDataForAI(31);
+        const hasData = teamData.employees.some(e => e.records.length > 0);
+        if (!hasData) {
+            loadingCard.remove();
+            addAIResponse(`Best Performer — ${monthName}`, 'trophy', 'No data for this month yet.');
+            return;
+        }
+        const today = formatDate(new Date());
+        const question = `Determine the BEST PERFORMER for ${monthName} (up to ${today}) from ${teamData.employees.length} team members. Rank all employees by overall performance and give a detailed breakdown of why the top performer earned the title.`;
+        const response = await askAI(question, teamData, 'best_performer');
+        loadingCard.remove();
+        addAIResponse(`Best Performer — ${monthName}`, 'trophy', response || 'No response');
+    } catch (err) {
+        loadingCard.remove();
+        addAIResponse('Best Performer', 'alert-circle', 'Error: ' + err.message);
     }
 }
 

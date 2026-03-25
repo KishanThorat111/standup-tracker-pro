@@ -72,7 +72,61 @@ RULES:
 - Only flag fake excuse if fake=true
 - Low trust (<80) is a real concern
 - Be factual, don't invent issues
-Data keys: d/ms/es/ghost/fake/trust.`
+Data keys: d/ms/es/ghost/fake/trust.`,
+
+        monthly_report: `Generate a comprehensive MONTHLY REPORT for the team. Cover ALL team members individually.
+
+FORMAT:
+## Monthly Team Report — [Month Year]
+
+### Overall Statistics
+- Working days tracked: X
+- Average morning attendance rate: X%
+- Average evening update rate: X%
+
+### Individual Performance
+For EACH employee:
+**Name** (Role) — Rating: ⭐ Excellent / ✅ Good / ⚠️ Needs Attention / 🔴 Concerning
+- Attendance: X/Y mornings present, X/Y evening updates
+- Key Contributions: [from their notes across the month]
+- Attendance Pattern: [consistent/improving/declining + specifics]
+- Areas for Growth: [if any]
+
+### Team Highlights
+- Best performer(s) with reason
+- Most improved with reason
+- Key concerns with evidence
+
+### Manager Action Items
+- 3-5 specific items
+
+RULES: Cover ALL employees. Use actual data — count dates. "No Response" evening = no update submitted. ghost=true = ghost promise. Data keys: d/ms/mn/es/en/ghost/fake/trust.`,
+
+        best_performer: `Determine the BEST PERFORMER from the team data. Analyze ALL employees fairly.
+
+CRITERIA (weighted):
+1. **Attendance (30%)**: Morning present rate, punctuality
+2. **Evening Updates (20%)**: Consistency of evening submissions
+3. **Work Quality (30%)**: Depth and detail of notes, meaningful contributions
+4. **Reliability (20%)**: Trust score, no ghost promises, no fake excuses
+
+FORMAT:
+## 🏆 Best Performer — [Month Year]
+
+### Winner: **[Name]** (Role)
+- Score: X/100
+- Why: [2-3 specific reasons with data evidence]
+
+### Full Team Rankings
+| Rank | Name | Score | Highlights |
+For each person, calculate and show their score.
+
+### Honorable Mentions
+- Most Consistent: [Name]
+- Most Improved: [Name]
+- Best Notes Quality: [Name]
+
+RULES: Rank ALL employees. Use real data — count attendance, evaluate notes quality. Be objective. Data keys: d/ms/mn/es/en/ghost/fake/trust.`
     };
 
     const systemPrompt = systemPrompts[mode] || systemPrompts.chat;
