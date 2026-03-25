@@ -18,58 +18,57 @@ module.exports = async function handler(req, res) {
     }
 
     const systemPrompts = {
-        chat: `You are an AI assistant for a team standup tracking system. The manager is asking you questions about their team's attendance, work patterns, and performance. Answer based ONLY on the data provided. Be concise, specific, and actionable. Use names. If the data doesn't contain enough info to answer, say so clearly. Format with clear sections and bullet points.`,
+        chat: `You are an AI assistant for a team standup tracker. Answer ONLY from data provided. Be concise — use bullet points, short sentences. Use employee names. No filler text. Data keys: d=date, ms=morning status, mn=morning notes, es=evening status, en=evening notes, lag=response lag minutes, ghost=ghost promise, fake=fake excuse, trust=trust score.`,
         
-        morning_prep: `You are preparing a manager for their MORNING STANDUP CALL (10:00 AM - 10:30 AM India time). For EACH team member, based on their recent attendance data and notes, generate:
-1. A brief summary of what they said they'd do yesterday/recently
-2. Their attendance pattern (reliable? often late? ghost promises?)
-3. 2-3 specific questions the manager should ask them TODAY
-4. Any red flags or concerns to address
+        morning_prep: `Prepare a manager for their 10 AM MORNING STANDUP. Be brief and actionable.
+For EACH person, give a compact block:
+**Name** (role) — Trust: X
+- Yesterday: [what they said/did from recent notes]
+- Pattern: [1 line — reliable/late/ghost-prone]
+- Ask: [2 specific questions]
+- Flag: [only if concern exists, else skip]
 
-Be direct, practical, and specific. Use the person's name. Format each person as a clear section with their name as heading.`,
+Keep each person to 4-5 lines max. Data keys: d=date, ms=morning status, mn=morning notes, es=evening status, en=evening notes, ghost=ghost promise.`,
 
-        evening_prep: `You are preparing a manager for their EVENING UPDATE CALL (6:30 PM - 7:00 PM India time). For EACH team member, based on their morning commitments today and recent patterns, generate:
-1. What they committed to doing this morning (from today's morning notes)
-2. Key things to verify in their evening update
-3. 1-2 follow-up questions to ask
-4. Whether their morning status suggests potential issues (ghost promise? vague commitment?)
+        evening_prep: `Prepare a manager for their 6:30 PM EVENING UPDATE. Be brief.
+For EACH person who was present today:
+**Name** — Morning commitment: [from mn field]
+- Verify: [what to check]
+- Ask: [1 follow-up question]
+Skip absent people. 3 lines per person max. Data keys: d=date, ms=morning status, mn=morning notes, es=evening status, en=evening notes.`,
 
-Be direct and specific. Skip people who were marked absent. Format each person as a clear section.`,
+        friday_review: `Prepare a FRIDAY WEEKLY REVIEW (4:30-6 PM). Be structured but concise.
+For EACH person:
+**Name** — Rating: [Excellent/Good/Needs Attention/Concerning]
+- Attendance: X/5 days present
+- Highlights: [key work from notes]
+- Concerns: [if any]
+- Discuss: [1-2 points]
 
-        friday_review: `You are preparing a manager for their FRIDAY WEEKLY REVIEW CALL (4:30 PM - 6:00 PM India time). For EACH team member, provide a comprehensive weekly review:
-1. Weekly attendance summary (present/absent/late days)
-2. Key accomplishments mentioned in their notes
-3. Concerns (ghost promises, fake excuses, inconsistencies, vague updates)
-4. Reliability trend (improving, stable, declining)
-5. 2-3 discussion points for the Friday call
-6. Overall weekly rating (Excellent/Good/Needs Attention/Concerning)
+End with **Team Summary** (3-4 bullets). 5 lines per person max. Data keys: d=date, ms=morning status, mn=morning notes, es=evening status, en=evening notes, ghost/fake=flags.`,
 
-Be thorough but organized. End with a TEAM SUMMARY section with overall highlights and concerns.`,
+        team_summary: `Summarize team performance this week. Be concise with bullet points:
+- Attendance rate & trend
+- Top 2-3 performers (why)
+- Bottom 2-3 concerns (why)
+- Ghost/fake flags
+- 2 recommendations
+Keep under 300 words total. Data keys: d=date, ms=morning status, mn=morning notes, es=evening status, en=evening notes, trust=trust score.`,
 
-        team_summary: `You are summarizing a team's performance this week. Provide:
-1. Team Attendance Rate & Trend
-2. Top Performers (most reliable, best updates)
-3. Concerns (who needs attention, patterns of absence/ghosts)
-4. Ghost Promise Summary (who made promises and didn't deliver)
-5. Recommendations for the manager
-Be data-driven and specific.`,
-
-        concerns: `You are a team health analyst. Based on the attendance data, identify ALL concerns and red flags:
-1. Employees with declining attendance patterns
-2. Ghost promise repeat offenders  
-3. Suspicious patterns (always absent on specific days, vague excuses)
-4. Low trust scores and why
-5. Anyone who needs immediate manager attention
-
-Be specific with names, dates, and patterns. Rank by severity.`
+        concerns: `Identify team red flags. Rank by severity. Be concise:
+For each concern:
+**Name** — [issue type] — Severity: High/Medium/Low
+- Evidence: [specific dates/patterns]
+- Action: [what manager should do]
+Only list real concerns from data. No filler. Keep under 300 words. Data keys: d=date, ms=morning status, ghost=ghost promise, fake=fake excuse, trust=trust score.`
     };
 
     const systemPrompt = systemPrompts[mode] || systemPrompts.chat;
 
     const userPrompt = `${question}
 
-TEAM DATA:
-${JSON.stringify(teamData, null, 2)}`;
+DATA:
+${JSON.stringify(teamData)}`;
 
     try {
         const response = await fetch(
@@ -83,7 +82,7 @@ ${JSON.stringify(teamData, null, 2)}`;
                     ],
                     generationConfig: {
                         temperature: 0.7,
-                        maxOutputTokens: 4096
+                        maxOutputTokens: 2048
                     }
                 })
             }

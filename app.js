@@ -1800,22 +1800,18 @@ async function buildTeamDataForAI(daysBack = 7) {
                 name: emp.full_name,
                 role: emp.role,
                 team: emp.team,
-                trust_score: emp.trust_score,
-                days_tracked: empRecords.length,
-                records: empRecords.map(r => ({
-                    date: r.date,
-                    morning_status: STATUS_CONFIG[r.morning?.status]?.label || 'Not recorded',
-                    morning_notes: r.morning?.notes || '',
-                    morning_async: r.morning?.async_content || '',
-                    morning_time: r.morning?.timestamp || null,
-                    morning_lag_min: r.morning?.response_lag_minutes || 0,
-                    evening_status: STATUS_CONFIG[r.evening?.status]?.label || 'Not recorded',
-                    evening_notes: r.evening?.notes || '',
-                    evening_async: r.evening?.async_content || '',
-                    is_ghost: r.morning?.status === 'present_ghost',
-                    is_fake: r.morning?.status === 'absent_fake_excuse',
-                    verification: r.morning?.verification_status || 'N/A'
-                }))
+                trust: emp.trust_score,
+                records: empRecords.map(r => {
+                    const rec = { d: r.date };
+                    if (r.morning?.status) rec.ms = STATUS_CONFIG[r.morning.status]?.label || r.morning.status;
+                    if (r.morning?.notes) rec.mn = r.morning.notes;
+                    if (r.morning?.response_lag_minutes) rec.lag = r.morning.response_lag_minutes;
+                    if (r.evening?.status) rec.es = STATUS_CONFIG[r.evening.status]?.label || r.evening.status;
+                    if (r.evening?.notes) rec.en = r.evening.notes;
+                    if (r.morning?.status === 'present_ghost') rec.ghost = true;
+                    if (r.morning?.status === 'absent_fake_excuse') rec.fake = true;
+                    return rec;
+                })
             };
         })
     };
@@ -1985,13 +1981,39 @@ function addAIResponse(title, icon, content, isLoading = false) {
                 </div>
                 <span class="text-[10px] text-taupe">${new Date().toLocaleTimeString()}</span>
             </div>
-            <div class="text-sm text-slate whitespace-pre-wrap leading-relaxed ai-text">${escapeHtml(content)}</div>
+            <div class="text-sm text-slate leading-relaxed ai-text">${renderMarkdown(content)}</div>
         `;
     }
 
     area.insertBefore(card, area.firstChild);
     lucide.createIcons();
     return card;
+}
+
+// Lightweight markdown to HTML renderer
+function renderMarkdown(text) {
+    if (!text) return '';
+    let html = escapeHtml(text);
+    // Headers
+    html = html.replace(/^### (.+)$/gm, '<h4 class="font-semibold text-charcoal mt-3 mb-1">$1</h4>');
+    html = html.replace(/^## (.+)$/gm, '<h3 class="font-semibold text-charcoal text-base mt-4 mb-1">$1</h3>');
+    // Bold
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong class="text-charcoal font-semibold">$1</strong>');
+    // Italic
+    html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    // Bullet lists
+    html = html.replace(/^\* (.+)$/gm, '<li class="ml-4 list-disc">$1</li>');
+    html = html.replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>');
+    // Numbered lists
+    html = html.replace(/^\d+\. (.+)$/gm, '<li class="ml-4 list-decimal">$1</li>');
+    // Wrap consecutive <li> items in <ul>/<ol>
+    html = html.replace(/((?:<li class="ml-4 list-disc">.+<\/li>\n?)+)/g, '<ul class="space-y-0.5 my-1">$1</ul>');
+    html = html.replace(/((?:<li class="ml-4 list-decimal">.+<\/li>\n?)+)/g, '<ol class="space-y-0.5 my-1">$1</ol>');
+    // Line breaks (but not after block elements)
+    html = html.replace(/\n(?!<[hulo])/g, '<br>');
+    // Clean up extra breaks after block elements
+    html = html.replace(/(<\/[hulo][l234]?>)\s*<br>/g, '$1');
+    return html;
 }
 
 async function handleAIChatSend(input) {

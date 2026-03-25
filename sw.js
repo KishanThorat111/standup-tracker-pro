@@ -1,9 +1,9 @@
 ﻿/**
- * Standup Tracker Pro - Service Worker v7
+ * Standup Tracker Pro - Service Worker v8
  * Stale-while-revalidate caching with offline fallback
  */
 
-const CACHE_NAME = 'standup-tracker-pro-v7';
+const CACHE_NAME = 'standup-tracker-pro-v8';
 const STATIC_ASSETS = [
     './',
     './index.html',
