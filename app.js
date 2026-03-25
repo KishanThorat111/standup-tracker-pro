@@ -222,6 +222,14 @@ async function initDatabase() {
         sync_queue: '++operation_id, timestamp, retry_count',
         app_settings: 'key'
     });
+
+    db.version(2).stores({
+        employees: '++id, full_name, team, is_active, trust_score',
+        attendance_records: '[employee_id+date], employee_id, date',
+        sync_queue: '++operation_id, timestamp, retry_count',
+        app_settings: 'key',
+        holidays: 'date'
+    });
     
     try {
         await db.open();
@@ -288,6 +296,53 @@ function debounce(fn, ms = 400) {
         clearTimeout(timer);
         timer = setTimeout(() => fn(...args), ms);
     };
+}
+
+// ============================================
+// HOLIDAY SYSTEM
+// ============================================
+
+function isWeekend(dateStr) {
+    const d = new Date(dateStr + 'T00:00:00');
+    return d.getDay() === 0 || d.getDay() === 6; // Sunday = 0, Saturday = 6
+}
+
+async function isHoliday(dateStr) {
+    if (isWeekend(dateStr)) return true;
+    const holiday = await db.holidays.get(dateStr);
+    return !!holiday;
+}
+
+async function getHolidayName(dateStr) {
+    const d = new Date(dateStr + 'T00:00:00');
+    if (d.getDay() === 0) return 'Sunday';
+    if (d.getDay() === 6) return 'Saturday';
+    const holiday = await db.holidays.get(dateStr);
+    return holiday?.name || null;
+}
+
+async function getAllHolidays() {
+    return await db.holidays.toArray();
+}
+
+async function addHoliday(dateStr, name) {
+    await db.holidays.put({ date: dateStr, name: name || 'Holiday' });
+    debouncedCloudSync();
+}
+
+async function removeHoliday(dateStr) {
+    await db.holidays.delete(dateStr);
+    debouncedCloudSync();
+}
+
+function getLastWorkingDay(fromDate) {
+    const d = new Date(fromDate + 'T00:00:00');
+    d.setDate(d.getDate() - 1);
+    // Skip weekends (custom holidays checked async separately)
+    while (d.getDay() === 0 || d.getDay() === 6) {
+        d.setDate(d.getDate() - 1);
+    }
+    return formatDate(d);
 }
 
 function calculateLagMinutes(startTime, endTime) {
@@ -663,6 +718,21 @@ function renderDashboard() {
 async function renderEmployeeList() {
     const list = document.getElementById('employeeList');
     const emptyState = document.getElementById('emptyState');
+    const holidayBanner = document.getElementById('holidayBanner');
+    
+    // Check if current date is a holiday
+    const holidayName = await getHolidayName(AppState.currentDate);
+    if (holidayName) {
+        if (holidayBanner) {
+            holidayBanner.classList.remove('hidden');
+            document.getElementById('holidayName').textContent = holidayName;
+        }
+        list.innerHTML = '';
+        emptyState.classList.add('hidden');
+        return;
+    } else if (holidayBanner) {
+        holidayBanner.classList.add('hidden');
+    }
     
     if (!AppState.employees.length) {
         list.innerHTML = '';
@@ -951,19 +1021,31 @@ async function handleQuickMark(e) {
 }
 
 async function copyYesterday() {
-    const yesterday = new Date(AppState.currentDate);
-    yesterday.setDate(yesterday.getDate() - 1);
-    const yesterdayStr = formatDate(yesterday);
+    // Find last working day (skip weekends and holidays)
+    let checkDate = new Date(AppState.currentDate + 'T00:00:00');
+    let lastWorkDay = null;
+    for (let i = 1; i <= 7; i++) {
+        const d = new Date(checkDate);
+        d.setDate(d.getDate() - i);
+        const ds = formatDate(d);
+        const isOff = await isHoliday(ds);
+        if (!isOff) { lastWorkDay = ds; break; }
+    }
     
-    const yesterdayRecords = await AppState.loadAttendanceForDate(yesterdayStr);
+    if (!lastWorkDay) {
+        showToast('No working day found in last 7 days', 'warning');
+        return;
+    }
     
-    if (Object.keys(yesterdayRecords).length === 0) {
-        showToast('No records from yesterday to copy', 'warning');
+    const prevRecords = await AppState.loadAttendanceForDate(lastWorkDay);
+    
+    if (Object.keys(prevRecords).length === 0) {
+        showToast(`No records from ${lastWorkDay}`, 'warning');
         return;
     }
     
     let copied = 0;
-    for (const [employeeId, record] of Object.entries(yesterdayRecords)) {
+    for (const [employeeId, record] of Object.entries(prevRecords)) {
         const empId = Number(employeeId) || employeeId;
         const existing = await db.attendance_records.get([empId, AppState.currentDate]);
         
@@ -981,7 +1063,7 @@ async function copyYesterday() {
         }
     }
     
-    showToast(`Copied ${copied} record(s) from yesterday`, 'success');
+    showToast(`Copied ${copied} record(s) from ${lastWorkDay}`, 'success');
     renderEmployeeList();
     updateInsights();
 }
@@ -1566,10 +1648,11 @@ async function syncToCloud() {
         const employees = await db.employees.toArray();
         const attendance_records = await db.attendance_records.toArray();
         const settings = await db.app_settings.get('main');
+        const holidays = await db.holidays.toArray();
 
         await apiCall('/sync/push', {
             method: 'POST',
-            body: JSON.stringify({ employees, attendance_records, settings })
+            body: JSON.stringify({ employees, attendance_records, settings, holidays })
         });
 
         // Update last sync time
@@ -1602,6 +1685,10 @@ async function syncFromCloud() {
             if (data.settings) {
                 const existing = await db.app_settings.get('main') || {};
                 await db.app_settings.put({ ...existing, ...data.settings, key: 'main' });
+            }
+            if (data.holidays?.length) {
+                await db.holidays.clear();
+                await db.holidays.bulkAdd(data.holidays);
             }
 
             await AppState.loadEmployees();
@@ -1793,6 +1880,46 @@ function renderAIAssistant() {
     const template = document.getElementById('aiAssistantTemplate');
     mainContent.innerHTML = '';
     mainContent.appendChild(template.content.cloneNode(true));
+
+    // Auto-prep based on current time
+    const now = new Date();
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+    const dayOfWeek = now.getDay(); // 0=Sun, 5=Fri
+    const banner = document.getElementById('autoPrepBanner');
+
+    if (banner) {
+        let prepHandler = null;
+        if (dayOfWeek === 5 && hours >= 15 && hours < 18) {
+            // Friday 3-6 PM → Friday Weekly Review
+            document.getElementById('autoPrepTitle').textContent = 'Friday Weekly Review Prep';
+            document.getElementById('autoPrepDesc').textContent = 'Your 4:30 PM weekly review call is coming up. Generate prep now.';
+            document.getElementById('autoPrepIcon').setAttribute('data-lucide', 'calendar-check');
+            prepHandler = handleFridayReview;
+        } else if (hours >= 17 && hours < 19) {
+            // 5-7 PM → Evening Update Prep
+            document.getElementById('autoPrepTitle').textContent = 'Evening Update Prep';
+            document.getElementById('autoPrepDesc').textContent = 'Your 6:30 PM update call is coming up. Check morning commitments.';
+            document.getElementById('autoPrepIcon').setAttribute('data-lucide', 'sunset');
+            prepHandler = handleEveningPrep;
+        } else if (hours >= 8 && hours < 11) {
+            // 8-11 AM → Morning Standup Prep
+            document.getElementById('autoPrepTitle').textContent = 'Morning Standup Prep';
+            document.getElementById('autoPrepDesc').textContent = 'Your 10 AM standup is coming up. Generate questions for your team.';
+            document.getElementById('autoPrepIcon').setAttribute('data-lucide', 'sunrise');
+            prepHandler = handleMorningPrep;
+        }
+
+        if (prepHandler && dayOfWeek !== 0 && dayOfWeek !== 6) {
+            banner.classList.remove('hidden');
+            document.getElementById('autoPrepRun').addEventListener('click', async function() {
+                this.disabled = true;
+                this.textContent = 'Generating...';
+                await prepHandler();
+                banner.classList.add('hidden');
+            });
+        }
+    }
 
     // Render employee quick-ask buttons
     const btnContainer = document.getElementById('aiEmployeeButtons');
@@ -2579,6 +2706,56 @@ function showSettingsModal() {
             showToast('Import failed: ' + err.message, 'error');
         }
     });
+
+    // Holiday management
+    async function renderHolidayList() {
+        const list = document.getElementById('holidayList');
+        if (!list) return;
+        const holidays = await getAllHolidays();
+        holidays.sort((a, b) => a.date.localeCompare(b.date));
+        
+        if (holidays.length === 0) {
+            list.innerHTML = '<p class="text-xs text-taupe italic">No custom holidays added</p>';
+            return;
+        }
+        
+        list.innerHTML = holidays.map(h => `
+            <div class="flex items-center justify-between py-1.5 px-2 bg-cream rounded text-sm">
+                <span class="text-slate">${escapeHtml(h.date)}</span>
+                <span class="text-charcoal font-medium">${escapeHtml(h.name)}</span>
+                <button class="remove-holiday text-taupe hover:text-terracotta text-xs" data-date="${escapeHtml(h.date)}">Remove</button>
+            </div>
+        `).join('');
+        
+        list.querySelectorAll('.remove-holiday').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                await removeHoliday(btn.dataset.date);
+                showToast('Holiday removed', 'info');
+                renderHolidayList();
+            });
+        });
+    }
+
+    content.getElementById('addHolidayBtn').addEventListener('click', async () => {
+        const dateInput = document.getElementById('holidayDate');
+        const nameInput = document.getElementById('holidayNameInput');
+        const dateVal = dateInput.value;
+        const nameVal = nameInput.value.trim();
+        
+        if (!dateVal) {
+            showToast('Please select a date', 'error');
+            return;
+        }
+        
+        await addHoliday(dateVal, nameVal || 'Holiday');
+        showToast('Holiday added', 'success');
+        dateInput.value = '';
+        nameInput.value = '';
+        renderHolidayList();
+    });
+
+    // Initial render of holidays
+    setTimeout(renderHolidayList, 100);
     
     showModal(content);
 }

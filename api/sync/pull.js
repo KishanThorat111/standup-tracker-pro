@@ -37,10 +37,16 @@ module.exports = async function handler(req, res) {
             { projection: { _id: 0, user_id: 0, synced_at: 0 } }
         );
 
+        const holidays = await db.collection('holidays')
+            .find({ user_id: userId })
+            .project({ _id: 0, user_id: 0, synced_at: 0 })
+            .toArray();
+
         res.json({
             employees: cleanEmployees,
             attendance_records,
-            settings
+            settings,
+            holidays
         });
     } catch (err) {
         console.error('Sync pull error:', err);

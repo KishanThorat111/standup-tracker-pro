@@ -11,7 +11,7 @@ module.exports = async function handler(req, res) {
         return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const { employees, attendance_records, settings } = req.body || {};
+    const { employees, attendance_records, settings, holidays } = req.body || {};
     const userId = auth.userId;
 
     try {
@@ -67,6 +67,18 @@ module.exports = async function handler(req, res) {
                 { $set: { ...settingsData, user_id: userId, synced_at: new Date() } },
                 { upsert: true }
             );
+        }
+
+        // Upsert holidays
+        if (Array.isArray(holidays) && holidays.length) {
+            // Clear existing holidays for this user first, then insert fresh
+            await db.collection('holidays').deleteMany({ user_id: userId });
+            const docs = holidays.map(h => ({
+                ...h,
+                user_id: userId,
+                synced_at: new Date()
+            }));
+            await db.collection('holidays').insertMany(docs);
         }
 
         res.json({ success: true, synced_at: new Date().toISOString() });

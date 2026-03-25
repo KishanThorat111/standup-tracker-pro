@@ -423,6 +423,16 @@
                 <button id="viewGhostsBtn" class="px-3 py-1.5 bg-terracotta text-white rounded-lg text-sm hover:opacity-90">View</button>
             </div>
             
+            <!-- Holiday Banner -->
+            <div id="holidayBanner" class="hidden card p-6 text-center border-sage bg-present-bg">
+                <div class="w-12 h-12 bg-sage/20 rounded-full flex items-center justify-center mx-auto mb-3">
+                    <i data-lucide="palm-tree" class="w-6 h-6 text-sage"></i>
+                </div>
+                <h3 class="text-lg font-semibold text-charcoal">Holiday</h3>
+                <p id="holidayName" class="text-taupe mt-1">Weekend</p>
+                <p class="text-xs text-taupe mt-2">No attendance tracking for this day</p>
+            </div>
+
             <!-- Employee List -->
             <div id="employeeList" class="space-y-4">
                 <!-- Cards rendered here -->
@@ -915,6 +925,21 @@
                     </button>
                 </div>
             </div>
+
+            <!-- Holiday Management Section -->
+            <div class="border-t border-border pt-4 space-y-3">
+                <h3 class="font-medium text-charcoal flex items-center gap-2">
+                    <i data-lucide="palm-tree" class="w-4 h-4 text-sage"></i>
+                    Holidays
+                </h3>
+                <p class="text-xs text-taupe">Saturdays & Sundays are automatic holidays. Add custom holidays below.</p>
+                <div class="flex gap-2">
+                    <input type="date" id="holidayDate" class="input-field text-sm flex-1">
+                    <input type="text" id="holidayNameInput" class="input-field text-sm flex-1" placeholder="Holiday name (e.g. Holi)">
+                    <button id="addHolidayBtn" class="btn-primary px-3 py-2 text-sm">Add</button>
+                </div>
+                <div id="holidayList" class="space-y-1 max-h-40 overflow-auto"></div>
+            </div>
             
             <div class="border-t border-border pt-4 space-y-3">
                 <h3 class="font-medium text-charcoal">Data Management</h3>
@@ -946,6 +971,20 @@
                     AI Assistant
                 </h2>
                 <span class="text-xs text-taupe">Powered by Gemini</span>
+            </div>
+
+            <!-- Auto Prep Banner -->
+            <div id="autoPrepBanner" class="hidden card p-4 border-action/30 bg-action/5">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 bg-action/20 rounded-full flex items-center justify-center shrink-0">
+                        <i id="autoPrepIcon" data-lucide="sunrise" class="w-5 h-5 text-action"></i>
+                    </div>
+                    <div class="flex-1">
+                        <p id="autoPrepTitle" class="font-medium text-charcoal text-sm">Morning Standup Prep Ready</p>
+                        <p id="autoPrepDesc" class="text-xs text-taupe">Click to generate questions for your 10 AM call</p>
+                    </div>
+                    <button id="autoPrepRun" class="btn-primary px-4 py-2 text-sm">Generate</button>
+                </div>
             </div>
 
             <!-- Quick Actions -->
