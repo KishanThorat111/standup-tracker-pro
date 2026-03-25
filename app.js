@@ -174,6 +174,7 @@ const AppState = {
     
     async loadEmployees() {
         this.employees = await db.employees.toArray();
+        this.employees.sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
         return this.employees;
     },
     
@@ -667,7 +668,69 @@ function createEmployeeCard(employee, record) {
         showEmployeeProfile(employee.id);
     });
     
+    // Previous history section (last 3 days)
+    loadPreviousHistory(cardEl, employee.id);
+    
     return cardEl;
+}
+
+async function loadPreviousHistory(cardEl, employeeId) {
+    const today = new Date(AppState.currentDate);
+    const historyDays = [];
+    for (let i = 1; i <= 3; i++) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        historyDays.push(formatDate(d));
+    }
+
+    const records = await db.attendance_records
+        .where('employee_id').equals(employeeId)
+        .filter(r => historyDays.includes(r.date))
+        .toArray();
+
+    if (records.length === 0) return;
+
+    records.sort((a, b) => b.date.localeCompare(a.date));
+
+    const section = document.createElement('div');
+    section.className = 'border-t border-border';
+    section.innerHTML = `
+        <button class="history-toggle w-full px-4 py-2 flex items-center gap-2 text-xs text-taupe hover:bg-cream/50 transition-colors">
+            <i data-lucide="history" class="w-3.5 h-3.5"></i>
+            <span>Previous Updates (${records.length} day${records.length > 1 ? 's' : ''})</span>
+            <i data-lucide="chevron-down" class="w-3.5 h-3.5 ml-auto history-chevron transition-transform"></i>
+        </button>
+        <div class="history-content hidden px-4 pb-3 space-y-2">
+            ${records.map(r => {
+                const mStatus = STATUS_CONFIG[r.morning?.status];
+                const eStatus = STATUS_CONFIG[r.evening?.status];
+                const mNotes = r.morning?.notes || '';
+                const eNotes = r.evening?.notes || '';
+                return `
+                    <div class="bg-cream/60 border border-border rounded-lg p-2.5 text-xs">
+                        <div class="flex items-center gap-2 mb-1">
+                            <span class="font-medium text-slate">${escapeHtml(r.date)}</span>
+                            ${mStatus ? `<span class="${mStatus.color} px-1.5 py-0.5 rounded text-[10px] font-bold">${escapeHtml(mStatus.abbr)}</span>` : ''}
+                            ${eStatus ? `<span class="${eStatus.color} px-1.5 py-0.5 rounded text-[10px] font-bold">${escapeHtml(eStatus.abbr)}</span>` : ''}
+                        </div>
+                        ${mNotes ? `<p class="text-taupe"><span class="text-slate font-medium">AM:</span> ${escapeHtml(mNotes)}</p>` : ''}
+                        ${eNotes ? `<p class="text-taupe mt-0.5"><span class="text-slate font-medium">PM:</span> ${escapeHtml(eNotes)}</p>` : ''}
+                        ${!mNotes && !eNotes ? '<p class="text-taupe italic">No notes recorded</p>' : ''}
+                    </div>
+                `;
+            }).join('')}
+        </div>
+    `;
+
+    section.querySelector('.history-toggle').addEventListener('click', () => {
+        const content = section.querySelector('.history-content');
+        const chevron = section.querySelector('.history-chevron');
+        content.classList.toggle('hidden');
+        chevron.style.transform = content.classList.contains('hidden') ? '' : 'rotate(180deg)';
+    });
+
+    cardEl.appendChild(section);
+    lucide.createIcons();
 }
 
 function applyStatusColor(select, status) {
@@ -1025,14 +1088,33 @@ function renderTeam() {
     mainContent.appendChild(template.content.cloneNode(true));
     
     document.getElementById('addEmployeeBtn').addEventListener('click', showAddEmployeeModal);
+    
+    const debouncedSearch = debounce(() => renderTeamList(), 250);
+    document.getElementById('teamSearch').addEventListener('input', debouncedSearch);
+    document.getElementById('showArchived').addEventListener('change', () => renderTeamList());
+    
     renderTeamList();
 }
 
 async function renderTeamList() {
     const list = document.getElementById('teamList');
     const empty = document.getElementById('emptyTeam');
+    const searchInput = document.getElementById('teamSearch');
+    const showArchivedCheckbox = document.getElementById('showArchived');
     
-    if (!AppState.employees.length) {
+    const searchTerm = (searchInput?.value || '').toLowerCase().trim();
+    const showArchived = showArchivedCheckbox?.checked || false;
+    
+    let filtered = AppState.employees.filter(e => {
+        if (!showArchived && !e.is_active) return false;
+        if (searchTerm) {
+            const haystack = `${e.full_name} ${e.role} ${e.team} ${e.email} ${e.slack_handle}`.toLowerCase();
+            return haystack.includes(searchTerm);
+        }
+        return true;
+    });
+    
+    if (!filtered.length) {
         list.innerHTML = '';
         empty.classList.remove('hidden');
         return;
@@ -1041,9 +1123,9 @@ async function renderTeamList() {
     empty.classList.add('hidden');
     list.innerHTML = '';
     
-    for (const employee of AppState.employees) {
+    for (const employee of filtered) {
         const card = document.createElement('div');
-        card.className = 'card p-4 flex items-center gap-3';
+        card.className = `card p-4 flex items-center gap-3 ${!employee.is_active ? 'opacity-60' : ''}`;
         
         const score = employee.trust_score || 100;
         const scoreClass = score >= 80 ? 'trust-high' : score >= 50 ? 'trust-medium' : 'trust-low';
@@ -1053,24 +1135,41 @@ async function renderTeamList() {
                 ${escapeHtml(getInitials(employee.full_name))}
             </div>
             <div class="flex-1 min-w-0">
-                <h3 class="font-medium text-charcoal truncate">${escapeHtml(employee.full_name)}</h3>
+                <h3 class="font-medium text-charcoal truncate">${escapeHtml(employee.full_name)} ${!employee.is_active ? '<span class="text-xs text-taupe">(Archived)</span>' : ''}</h3>
                 <p class="text-sm text-taupe">${escapeHtml(employee.role)}</p>
                 <div class="flex items-center gap-2 mt-1">
                     <span class="${scoreClass} px-2 py-0.5 rounded text-xs text-white font-medium">Trust: ${score}</span>
                     <span class="text-xs text-taupe">${escapeHtml(employee.team || 'No team')}</span>
                 </div>
             </div>
-            <button class="archive-btn p-2 hover:bg-cream rounded-lg transition-colors" title="Archive employee">
-                <i data-lucide="archive" class="w-5 h-5 text-taupe"></i>
-            </button>
+            <div class="flex items-center gap-1">
+                <button class="profile-btn p-2 hover:bg-cream rounded-lg transition-colors" title="View profile">
+                    <i data-lucide="user" class="w-5 h-5 text-dusty"></i>
+                </button>
+                <button class="edit-btn p-2 hover:bg-cream rounded-lg transition-colors" title="Edit employee">
+                    <i data-lucide="pencil" class="w-5 h-5 text-dusty"></i>
+                </button>
+                <button class="archive-btn p-2 hover:bg-cream rounded-lg transition-colors" title="${employee.is_active ? 'Archive' : 'Restore'} employee">
+                    <i data-lucide="${employee.is_active ? 'archive' : 'archive-restore'}" class="w-5 h-5 text-taupe"></i>
+                </button>
+            </div>
         `;
         
+        card.querySelector('.profile-btn').addEventListener('click', () => {
+            showEmployeeProfile(employee.id);
+        });
+
+        card.querySelector('.edit-btn').addEventListener('click', () => {
+            showEditEmployeeModal(employee.id);
+        });
+
         card.querySelector('.archive-btn').addEventListener('click', async () => {
-            if (confirm(`Archive ${employee.full_name}? They will no longer appear in daily tracking.`)) {
-                await db.employees.update(employee.id, { is_active: false });
+            const action = employee.is_active ? 'Archive' : 'Restore';
+            if (confirm(`${action} ${employee.full_name}?`)) {
+                await db.employees.update(employee.id, { is_active: !employee.is_active });
                 await AppState.loadEmployees();
                 renderTeamList();
-                showToast('Employee archived', 'info');
+                showToast(`Employee ${action.toLowerCase()}d`, 'info');
             }
         });
         
@@ -1268,6 +1367,75 @@ function downloadFile(content, filename, mimeType) {
 }
 
 // ============================================
+// AI-READY DATA EXPORT
+// ============================================
+
+async function exportAiData() {
+    const employees = await db.employees.toArray();
+    const allRecords = await db.attendance_records.toArray();
+
+    const aiData = {
+        export_metadata: {
+            exported_at: new Date().toISOString(),
+            format_version: '1.0',
+            purpose: 'AI analysis of employee work patterns, attendance, and standup data'
+        },
+        team_summary: {
+            total_employees: employees.filter(e => e.is_active).length,
+            archived_employees: employees.filter(e => !e.is_active).length,
+            total_records: allRecords.length
+        },
+        employees: employees.map(emp => {
+            const empRecords = allRecords
+                .filter(r => r.employee_id === emp.id)
+                .sort((a, b) => b.date.localeCompare(a.date));
+
+            return {
+                id: emp.id,
+                name: emp.full_name,
+                role: emp.role,
+                team: emp.team,
+                is_active: emp.is_active,
+                trust_score: emp.trust_score,
+                total_tracked_days: empRecords.length,
+                daily_records: empRecords.map(r => ({
+                    date: r.date,
+                    morning: {
+                        status: r.morning?.status || null,
+                        status_label: STATUS_CONFIG[r.morning?.status]?.label || null,
+                        notes: r.morning?.notes || null,
+                        async_content: r.morning?.async_content || null,
+                        timestamp: r.morning?.timestamp || null,
+                        lag_minutes: r.morning?.response_lag_minutes || 0,
+                        verification: r.morning?.verification_status || null,
+                        is_ghost: r.morning?.status === 'present_ghost',
+                        is_fake: r.morning?.status === 'absent_fake_excuse'
+                    },
+                    evening: {
+                        status: r.evening?.status || null,
+                        status_label: STATUS_CONFIG[r.evening?.status]?.label || null,
+                        notes: r.evening?.notes || null,
+                        async_content: r.evening?.async_content || null,
+                        timestamp: r.evening?.timestamp || null,
+                        lag_minutes: r.evening?.response_lag_minutes || 0,
+                        verification: r.evening?.verification_status || null,
+                        is_ghost: r.evening?.status === 'present_ghost',
+                        is_fake: r.evening?.status === 'absent_fake_excuse'
+                    }
+                }))
+            };
+        })
+    };
+
+    downloadFile(
+        JSON.stringify(aiData, null, 2),
+        `standup-ai-export-${formatDate(new Date())}.json`,
+        'application/json'
+    );
+    showToast('AI-ready data exported', 'success');
+}
+
+// ============================================
 // MODALS
 // ============================================
 
@@ -1333,6 +1501,57 @@ function showAddEmployeeModal() {
         }
     });
     
+    showModal(content);
+}
+
+async function showEditEmployeeModal(employeeId) {
+    const employee = await db.employees.get(employeeId);
+    if (!employee) return;
+
+    const template = document.getElementById('editEmployeeModalTemplate');
+    const content = template.content.cloneNode(true);
+
+    content.getElementById('editEmpName').value = employee.full_name || '';
+    content.getElementById('editEmpRole').value = employee.role || '';
+    content.getElementById('editEmpTeam').value = employee.team || '';
+    content.getElementById('editEmpEmail').value = employee.email || '';
+    content.getElementById('editEmpSlack').value = employee.slack_handle || '';
+    content.getElementById('editEmpActive').value = employee.is_active ? 'true' : 'false';
+
+    content.getElementById('updateEmployeeBtn').addEventListener('click', async () => {
+        const name = document.getElementById('editEmpName').value.trim();
+        const role = document.getElementById('editEmpRole').value.trim();
+        const team = document.getElementById('editEmpTeam').value.trim();
+        const email = document.getElementById('editEmpEmail').value.trim();
+        const slack = document.getElementById('editEmpSlack').value.trim();
+        const isActive = document.getElementById('editEmpActive').value === 'true';
+
+        if (!name || !role) {
+            showToast('Name and role are required', 'error');
+            return;
+        }
+
+        await db.employees.update(employeeId, {
+            full_name: name,
+            role,
+            team,
+            email,
+            slack_handle: slack,
+            is_active: isActive
+        });
+
+        await AppState.loadEmployees();
+        showToast('Employee updated successfully', 'success');
+        closeModal();
+
+        if (AppState.currentScreen === 'dashboard') {
+            renderEmployeeList();
+            updateInsights();
+        } else if (AppState.currentScreen === 'team') {
+            renderTeamList();
+        }
+    });
+
     showModal(content);
 }
 
@@ -1435,7 +1654,10 @@ async function showEmployeeProfile(employeeId) {
         .filter(r => r.date >= formatDate(thirtyDaysAgo))
         .toArray();
     
+    records.sort((a, b) => b.date.localeCompare(a.date));
+    
     let presentCount = 0, ghostCount = 0, fakeCount = 0, totalLag = 0, lagCount = 0;
+    let absentCount = 0, lateCount = 0;
     
     records.forEach(r => {
         ['morning', 'evening'].forEach(s => {
@@ -1443,6 +1665,8 @@ async function showEmployeeProfile(employeeId) {
             if (status?.includes('present')) presentCount++;
             if (status === 'present_ghost') ghostCount++;
             if (status === 'absent_fake_excuse') fakeCount++;
+            if (status === 'present_late') lateCount++;
+            if (status?.includes('absent')) absentCount++;
             if (r[s]?.response_lag_minutes > 0) {
                 totalLag += r[s].response_lag_minutes;
                 lagCount++;
@@ -1456,67 +1680,150 @@ async function showEmployeeProfile(employeeId) {
     const fakeRate = Math.round((fakeCount / total) * 100);
     const avgLag = lagCount > 0 ? Math.round(totalLag / lagCount) : 0;
     
+    // Weekly breakdown
+    const weekMap = {};
+    records.forEach(r => {
+        const d = new Date(r.date);
+        const weekStart = new Date(d);
+        weekStart.setDate(d.getDate() - d.getDay());
+        const weekKey = formatDate(weekStart);
+        if (!weekMap[weekKey]) weekMap[weekKey] = { present: 0, absent: 0, ghost: 0, total: 0 };
+        ['morning', 'evening'].forEach(s => {
+            const st = r[s]?.status;
+            if (st) {
+                weekMap[weekKey].total++;
+                if (st.includes('present')) weekMap[weekKey].present++;
+                if (st.includes('absent')) weekMap[weekKey].absent++;
+                if (st === 'present_ghost') weekMap[weekKey].ghost++;
+            }
+        });
+    });
+    
     const content = document.createElement('div');
     content.className = 'p-6 space-y-6';
     content.innerHTML = `
         <div class="flex items-center justify-between">
             <h2 class="text-xl font-semibold text-charcoal">Employee Profile</h2>
-            <button class="modal-close p-2 hover:bg-cream rounded-lg transition-colors">
-                <i data-lucide="x" class="w-5 h-5 text-taupe"></i>
-            </button>
+            <div class="flex items-center gap-2">
+                <button class="edit-profile-btn p-2 hover:bg-cream rounded-lg transition-colors" title="Edit">
+                    <i data-lucide="pencil" class="w-5 h-5 text-dusty"></i>
+                </button>
+                <button class="modal-close p-2 hover:bg-cream rounded-lg transition-colors">
+                    <i data-lucide="x" class="w-5 h-5 text-taupe"></i>
+                </button>
+            </div>
         </div>
         
         <div class="flex items-center gap-4">
             <div class="w-16 h-16 bg-slate/20 rounded-full flex items-center justify-center text-2xl font-semibold text-slate">
                 ${escapeHtml(getInitials(employee.full_name))}
             </div>
-            <div>
+            <div class="flex-1">
                 <h3 class="text-lg font-medium text-charcoal">${escapeHtml(employee.full_name)}</h3>
                 <p class="text-taupe">${escapeHtml(employee.role)}</p>
-                <span class="inline-block mt-1 px-2 py-0.5 ${employee.trust_score >= 80 ? 'bg-sage' : employee.trust_score >= 50 ? 'bg-amber' : 'bg-terracotta'} rounded text-xs text-white font-medium">
-                    Trust: ${employee.trust_score}
-                </span>
+                <div class="flex items-center gap-2 mt-1 flex-wrap">
+                    <span class="inline-block px-2 py-0.5 ${employee.trust_score >= 80 ? 'bg-sage' : employee.trust_score >= 50 ? 'bg-amber' : 'bg-terracotta'} rounded text-xs text-white font-medium">
+                        Trust: ${employee.trust_score || 100}
+                    </span>
+                    ${employee.team ? `<span class="text-xs text-taupe">${escapeHtml(employee.team)}</span>` : ''}
+                    ${employee.email ? `<span class="text-xs text-taupe">${escapeHtml(employee.email)}</span>` : ''}
+                    ${employee.slack_handle ? `<span class="text-xs text-dusty">${escapeHtml(employee.slack_handle)}</span>` : ''}
+                </div>
             </div>
         </div>
         
-        <div class="grid grid-cols-2 gap-3">
+        <!-- Stats Grid -->
+        <div class="grid grid-cols-3 gap-3">
             <div class="bg-cream border border-border rounded-lg p-3 text-center">
                 <p class="text-2xl font-bold text-sage">${attendanceRate}%</p>
-                <p class="text-xs text-taupe">Attendance Rate</p>
+                <p class="text-xs text-taupe">Attendance</p>
             </div>
             <div class="bg-cream border border-border rounded-lg p-3 text-center">
-                <p class="text-2xl font-bold text-terracotta">${ghostRate}%</p>
-                <p class="text-xs text-taupe">Ghost Rate</p>
-            </div>
-            <div class="bg-cream border border-border rounded-lg p-3 text-center">
-                <p class="text-2xl font-bold text-rust">${fakeRate}%</p>
-                <p class="text-xs text-taupe">Fake Excuse Rate</p>
+                <p class="text-2xl font-bold text-terracotta">${ghostCount}</p>
+                <p class="text-xs text-taupe">Ghosts</p>
             </div>
             <div class="bg-cream border border-border rounded-lg p-3 text-center">
                 <p class="text-2xl font-bold text-amber">${avgLag}m</p>
-                <p class="text-xs text-taupe">Avg Response Lag</p>
+                <p class="text-xs text-taupe">Avg Lag</p>
             </div>
         </div>
         
+        <div class="grid grid-cols-3 gap-3">
+            <div class="bg-cream border border-border rounded-lg p-2.5 text-center">
+                <p class="text-lg font-bold text-rust">${fakeCount}</p>
+                <p class="text-[10px] text-taupe">Fake Excuses</p>
+            </div>
+            <div class="bg-cream border border-border rounded-lg p-2.5 text-center">
+                <p class="text-lg font-bold text-amber">${lateCount}</p>
+                <p class="text-[10px] text-taupe">Late Records</p>
+            </div>
+            <div class="bg-cream border border-border rounded-lg p-2.5 text-center">
+                <p class="text-lg font-bold text-taupe">${absentCount}</p>
+                <p class="text-[10px] text-taupe">Absences</p>
+            </div>
+        </div>
+        
+        <!-- Weekly Breakdown -->
+        ${Object.keys(weekMap).length > 0 ? `
         <div>
-            <p class="text-sm font-medium text-slate mb-2">Recent Activity (Last 30 Days)</p>
-            <div class="space-y-2 max-h-60 overflow-auto">
-                ${records.slice(0, 10).map(r => `
-                    <div class="bg-cream border border-border rounded-lg p-2 text-sm">
-                        <p class="text-slate">${escapeHtml(r.date)}</p>
-                        <div class="flex gap-2 mt-1">
-                            <span class="${STATUS_CONFIG[r.morning?.status]?.color || 'bg-cream'} px-2 py-0.5 rounded text-xs text-white">
-                                M: ${escapeHtml(STATUS_CONFIG[r.morning?.status]?.label || '-')}
-                            </span>
-                            <span class="${STATUS_CONFIG[r.evening?.status]?.color || 'bg-cream'} px-2 py-0.5 rounded text-xs text-white">
-                                E: ${escapeHtml(STATUS_CONFIG[r.evening?.status]?.label || '-')}
-                            </span>
+            <p class="text-sm font-medium text-slate mb-2">Weekly Breakdown</p>
+            <div class="space-y-1.5">
+                ${Object.entries(weekMap).sort(([a],[b]) => b.localeCompare(a)).map(([week, data]) => {
+                    const pct = data.total > 0 ? Math.round((data.present / data.total) * 100) : 0;
+                    return `
+                        <div class="flex items-center gap-3 text-xs">
+                            <span class="text-taupe w-20 shrink-0">Wk ${escapeHtml(week.slice(5))}</span>
+                            <div class="flex-1 bg-border rounded-full h-4 overflow-hidden">
+                                <div class="h-full bg-sage rounded-full" style="width: ${pct}%"></div>
+                            </div>
+                            <span class="text-slate font-medium w-10 text-right">${pct}%</span>
+                            ${data.ghost > 0 ? `<span class="text-terracotta">${data.ghost}G</span>` : ''}
                         </div>
+                    `;
+                }).join('')}
+            </div>
+        </div>
+        ` : ''}
+        
+        <!-- Detailed Daily History -->
+        <div>
+            <p class="text-sm font-medium text-slate mb-2">Daily History (Last 30 Days)</p>
+            <div class="space-y-2 max-h-80 overflow-auto">
+                ${records.length === 0 ? '<p class="text-sm text-taupe italic">No records in the last 30 days</p>' : ''}
+                ${records.map(r => {
+                    const mStatus = STATUS_CONFIG[r.morning?.status];
+                    const eStatus = STATUS_CONFIG[r.evening?.status];
+                    const mNotes = r.morning?.notes || '';
+                    const eNotes = r.evening?.notes || '';
+                    const mAsync = r.morning?.async_content || '';
+                    const eAsync = r.evening?.async_content || '';
+                    const isGhost = r.morning?.status === 'present_ghost' || r.evening?.status === 'present_ghost';
+                    const isFake = r.morning?.status === 'absent_fake_excuse' || r.evening?.status === 'absent_fake_excuse';
+                    return `
+                    <div class="bg-cream border ${isGhost ? 'border-terracotta' : isFake ? 'border-rust' : 'border-border'} rounded-lg p-3 text-sm">
+                        <div class="flex items-center gap-2 mb-1.5">
+                            <span class="font-medium text-charcoal">${escapeHtml(r.date)}</span>
+                            ${mStatus ? `<span class="${mStatus.color} px-1.5 py-0.5 rounded text-xs font-bold">M: ${escapeHtml(mStatus.abbr)}</span>` : ''}
+                            ${eStatus ? `<span class="${eStatus.color} px-1.5 py-0.5 rounded text-xs font-bold">E: ${escapeHtml(eStatus.abbr)}</span>` : ''}
+                            ${isGhost ? '<span class="text-xs text-terracotta font-medium ml-auto">GHOST</span>' : ''}
+                            ${isFake ? '<span class="text-xs text-rust font-medium ml-auto">FAKE</span>' : ''}
+                        </div>
+                        ${mNotes ? `<p class="text-taupe text-xs"><span class="text-slate font-medium">Morning:</span> ${escapeHtml(mNotes)}</p>` : ''}
+                        ${mAsync ? `<p class="text-dusty text-xs"><span class="text-slate font-medium">Async:</span> ${escapeHtml(mAsync)}</p>` : ''}
+                        ${eNotes ? `<p class="text-taupe text-xs mt-0.5"><span class="text-slate font-medium">Evening:</span> ${escapeHtml(eNotes)}</p>` : ''}
+                        ${eAsync ? `<p class="text-dusty text-xs"><span class="text-slate font-medium">Async:</span> ${escapeHtml(eAsync)}</p>` : ''}
+                        ${!mNotes && !eNotes && !mAsync && !eAsync ? '<p class="text-taupe text-xs italic">No notes</p>' : ''}
                     </div>
-                `).join('')}
+                    `;
+                }).join('')}
             </div>
         </div>
     `;
+    
+    content.querySelector('.edit-profile-btn').addEventListener('click', () => {
+        closeModal();
+        showEditEmployeeModal(employeeId);
+    });
     
     showModal(content);
 }
@@ -1547,6 +1854,8 @@ function showSettingsModal() {
         await db.app_settings.update('main', { last_backup: new Date().toISOString() });
         showToast('Database exported', 'success');
     });
+
+    content.getElementById('exportAiBtn').addEventListener('click', exportAiData);
     
     content.getElementById('importDbBtn').addEventListener('click', () => {
         document.getElementById('importFile').click();

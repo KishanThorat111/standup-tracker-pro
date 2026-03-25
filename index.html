@@ -564,6 +564,17 @@
                 </button>
             </div>
             
+            <div class="card p-3 flex flex-wrap items-center gap-3">
+                <div class="flex items-center gap-2 flex-1 min-w-[200px]">
+                    <i data-lucide="search" class="w-4 h-4 text-taupe"></i>
+                    <input type="text" id="teamSearch" class="input-field flex-1 py-2 text-sm border-0" placeholder="Search employees...">
+                </div>
+                <label class="flex items-center gap-2 text-sm text-slate cursor-pointer">
+                    <input type="checkbox" id="showArchived" class="accent-action w-4 h-4">
+                    Show Archived
+                </label>
+            </div>
+            
             <div id="teamList" class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <!-- Cards rendered here -->
             </div>
@@ -679,6 +690,49 @@
         </div>
     </template>
     
+    <template id="editEmployeeModalTemplate">
+        <div class="p-6 space-y-6">
+            <div class="flex items-center justify-between">
+                <h2 class="text-xl font-semibold text-charcoal">Edit Employee</h2>
+                <button class="modal-close p-2 hover:bg-cream rounded-lg transition-colors">
+                    <i data-lucide="x" class="w-5 h-5 text-taupe"></i>
+                </button>
+            </div>
+            
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm text-slate mb-2">Full Name <span class="text-terracotta">*</span></label>
+                    <input type="text" id="editEmpName" class="input-field w-full" placeholder="John Doe">
+                </div>
+                <div>
+                    <label class="block text-sm text-slate mb-2">Role <span class="text-terracotta">*</span></label>
+                    <input type="text" id="editEmpRole" class="input-field w-full" placeholder="Senior Developer">
+                </div>
+                <div>
+                    <label class="block text-sm text-slate mb-2">Team</label>
+                    <input type="text" id="editEmpTeam" class="input-field w-full" placeholder="Engineering">
+                </div>
+                <div>
+                    <label class="block text-sm text-slate mb-2">Email</label>
+                    <input type="email" id="editEmpEmail" class="input-field w-full" placeholder="john@company.com">
+                </div>
+                <div>
+                    <label class="block text-sm text-slate mb-2">Slack Handle</label>
+                    <input type="text" id="editEmpSlack" class="input-field w-full" placeholder="@johndoe">
+                </div>
+                <div>
+                    <label class="block text-sm text-slate mb-2">Status</label>
+                    <select id="editEmpActive" class="select-field w-full">
+                        <option value="true">Active</option>
+                        <option value="false">Archived</option>
+                    </select>
+                </div>
+            </div>
+            
+            <button id="updateEmployeeBtn" class="btn-primary w-full">Update Employee</button>
+        </div>
+    </template>
+    
     <template id="verifyModalTemplate">
         <div class="p-6 space-y-6">
             <div class="flex items-center justify-between">
@@ -776,6 +830,10 @@
                 <button id="exportDbBtn" class="w-full btn-secondary flex items-center justify-center gap-2">
                     <i data-lucide="database" class="w-4 h-4"></i>
                     Export Full Database
+                </button>
+                <button id="exportAiBtn" class="w-full btn-secondary flex items-center justify-center gap-2">
+                    <i data-lucide="brain" class="w-4 h-4"></i>
+                    Export AI-Ready Data
                 </button>
                 <button id="importDbBtn" class="w-full btn-secondary flex items-center justify-center gap-2">
                     <i data-lucide="upload" class="w-4 h-4"></i>
