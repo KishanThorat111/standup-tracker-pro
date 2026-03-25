@@ -43,9 +43,6 @@ Please provide:
                     generationConfig: {
                         temperature: 0.7,
                         maxOutputTokens: 16384
-                    },
-                    thinkingConfig: {
-                        thinkingBudget: 2048
                     }
                 })
             }
