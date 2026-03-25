@@ -230,6 +230,15 @@ async function initDatabase() {
         app_settings: 'key',
         holidays: 'date'
     });
+
+    db.version(3).stores({
+        employees: '++id, full_name, team, is_active, trust_score',
+        attendance_records: '[employee_id+date], employee_id, date',
+        sync_queue: '++operation_id, timestamp, retry_count',
+        app_settings: 'key',
+        holidays: 'date',
+        ai_history: '++id, timestamp'
+    });
     
     try {
         await db.open();
@@ -1952,6 +1961,16 @@ function renderAIAssistant() {
     });
 
     lucide.createIcons();
+
+    // Clear history button
+    document.getElementById('clearAIHistory')?.addEventListener('click', async () => {
+        await db.ai_history.clear();
+        const area = document.getElementById('aiResponseArea');
+        if (area) area.innerHTML = '';
+    });
+
+    // Load saved AI history
+    loadAIHistory();
 }
 
 function addAIResponse(title, icon, content, isLoading = false) {
@@ -1973,21 +1992,60 @@ function addAIResponse(title, icon, content, isLoading = false) {
             </div>
         `;
     } else {
+        const timeStr = new Date().toLocaleTimeString();
         card.innerHTML = `
             <div class="flex items-center justify-between">
                 <div class="flex items-center gap-2">
                     <i data-lucide="${icon}" class="w-4 h-4 text-action"></i>
                     <span class="font-medium text-charcoal text-sm">${escapeHtml(title)}</span>
                 </div>
-                <span class="text-[10px] text-taupe">${new Date().toLocaleTimeString()}</span>
+                <span class="text-[10px] text-taupe">${timeStr}</span>
             </div>
             <div class="text-sm text-slate leading-relaxed ai-text">${renderMarkdown(content)}</div>
         `;
+        // Save to history
+        db.ai_history.add({
+            title,
+            icon,
+            content,
+            timestamp: new Date().toISOString()
+        }).catch(() => {});
     }
 
     area.insertBefore(card, area.firstChild);
     lucide.createIcons();
     return card;
+}
+
+// Load saved AI history when rendering AI Assistant tab
+async function loadAIHistory() {
+    const area = document.getElementById('aiResponseArea');
+    if (!area) return;
+    
+    try {
+        // Get last 20 responses, newest first
+        const history = await db.ai_history.orderBy('id').reverse().limit(20).toArray();
+        
+        history.forEach(item => {
+            const card = document.createElement('div');
+            card.className = 'card p-4 space-y-2 ai-response-card';
+            const time = new Date(item.timestamp).toLocaleTimeString();
+            card.innerHTML = `
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="${escapeHtml(item.icon)}" class="w-4 h-4 text-action"></i>
+                        <span class="font-medium text-charcoal text-sm">${escapeHtml(item.title)}</span>
+                    </div>
+                    <span class="text-[10px] text-taupe">${time}</span>
+                </div>
+                <div class="text-sm text-slate leading-relaxed ai-text">${renderMarkdown(item.content)}</div>
+            `;
+            area.appendChild(card);
+        });
+        lucide.createIcons();
+    } catch (e) {
+        console.error('Failed to load AI history:', e);
+    }
 }
 
 // Lightweight markdown to HTML renderer
@@ -2076,7 +2134,8 @@ async function handleMorningPrep() {
             addAIResponse('Morning Standup Prep (10 AM)', 'sunrise', 'No attendance data recorded yet. Start tracking on the Dashboard first, then come back for AI-powered prep.');
             return;
         }
-        const question = `Prepare me for today's 10 AM standup. Today is ${AppState.currentDate}. Brief prep for each person.`;
+        const today = formatDate(new Date());
+        const question = `Prepare me for today's 10 AM standup. TODAY is ${today}. Cover ALL ${teamData.employees.length} team members. Use their latest notes to generate specific follow-up questions.`;
         const response = await askAI(question, teamData, 'morning_prep');
         loadingCard.remove();
         addAIResponse('Morning Standup Prep (10 AM)', 'sunrise', response || 'No response');
@@ -2097,7 +2156,8 @@ async function handleEveningPrep() {
             addAIResponse('Evening Update Prep (6:30 PM)', 'sunset', 'No attendance data recorded yet. Start tracking on the Dashboard first.');
             return;
         }
-        const question = `Prepare me for today's 6:30 PM evening update. Today is ${AppState.currentDate}. Brief check for each present person.`;
+        const today = formatDate(new Date());
+        const question = `Prepare me for today's 6:30 PM evening update. TODAY is ${today}. Cover ALL present team members and verify their morning commitments.`;
         const response = await askAI(question, teamData, 'evening_prep');
         loadingCard.remove();
         addAIResponse('Evening Update Prep (6:30 PM)', 'sunset', response || 'No response');
@@ -2118,7 +2178,8 @@ async function handleFridayReview() {
             addAIResponse('Friday Weekly Review Prep (4:30 PM)', 'calendar-check', 'No attendance data this week. Start tracking on the Dashboard first.');
             return;
         }
-        const question = `Friday weekly review for ${AppState.currentDate}. Brief review per person + team summary.`;
+        const today = formatDate(new Date());
+        const question = `Friday weekly review for week ending ${today}. Cover ALL ${teamData.employees.length} team members + team summary.`;
         const response = await askAI(question, teamData, 'friday_review');
         loadingCard.remove();
         addAIResponse('Friday Weekly Review Prep (4:30 PM)', 'calendar-check', response || 'No response');
@@ -2139,7 +2200,8 @@ async function handleTeamSummary() {
             addAIResponse('Team Overview - This Week', 'users', `**${teamData.employees.length} employees** registered but no attendance data yet.\nStart tracking on the Dashboard to get team insights.`);
             return;
         }
-        const question = `Team performance overview for week ending ${AppState.currentDate}. Be concise.`;
+        const today = formatDate(new Date());
+        const question = `Team performance overview for week ending ${today}. Cover ALL ${teamData.employees.length} members.`;
         const response = await askAI(question, teamData, 'team_summary');
         loadingCard.remove();
         addAIResponse('Team Overview - This Week', 'users', response || 'No response');
@@ -2160,7 +2222,8 @@ async function handleConcerns() {
             addAIResponse('Flagged Concerns', 'alert-triangle', 'No data to analyze yet. Start tracking attendance to detect concerns.');
             return;
         }
-        const question = `Team red flags and concerns up to ${AppState.currentDate}. Rank by severity. Be concise.`;
+        const today = formatDate(new Date());
+        const question = `Team red flags and concerns up to ${today}. Cover all members. Rank by severity.`;
         const response = await askAI(question, teamData, 'concerns');
         loadingCard.remove();
         addAIResponse('Flagged Concerns', 'alert-triangle', response || 'No response');
