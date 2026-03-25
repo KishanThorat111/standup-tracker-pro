@@ -3,7 +3,7 @@
  * Stale-while-revalidate caching with offline fallback
  */
 
-const CACHE_NAME = 'standup-tracker-pro-v3';
+const CACHE_NAME = 'standup-tracker-pro-v4';
 const STATIC_ASSETS = [
     './',
     './index.html',
@@ -41,6 +41,9 @@ self.addEventListener('fetch', (event) => {
 
     const url = new URL(event.request.url);
     const isOwnAsset = url.origin === self.location.origin;
+
+    // Never cache API calls
+    if (url.pathname.startsWith('/api/')) return;
 
     event.respondWith(
         caches.match(event.request).then(cached => {
