@@ -3,7 +3,7 @@
  * Stale-while-revalidate caching with offline fallback
  */
 
-const CACHE_NAME = 'standup-tracker-pro-v4';
+const CACHE_NAME = 'standup-tracker-pro-v5';
 const STATIC_ASSETS = [
     './',
     './index.html',

@@ -337,6 +337,9 @@
                 <button data-screen="reports" class="nav-tab px-4 py-2 rounded-lg text-sm font-medium text-slate hover:text-charcoal hover:bg-card whitespace-nowrap transition-colors">
                     Reports
                 </button>
+                <button data-screen="ai" class="nav-tab px-4 py-2 rounded-lg text-sm font-medium text-slate hover:text-charcoal hover:bg-card whitespace-nowrap transition-colors flex items-center gap-1">
+                    <i data-lucide="sparkles" class="w-4 h-4"></i> AI Assistant
+                </button>
             </nav>
         </header>
         
@@ -931,6 +934,89 @@
             </div>
             
             <button id="saveSettingsBtn" class="btn-primary w-full">Save Settings</button>
+        </div>
+    </template>
+
+    <!-- AI Assistant Template -->
+    <template id="aiAssistantTemplate">
+        <div class="space-y-4 max-w-3xl mx-auto">
+            <div class="flex items-center justify-between">
+                <h2 class="text-xl font-semibold text-charcoal flex items-center gap-2">
+                    <i data-lucide="sparkles" class="w-5 h-5 text-action"></i>
+                    AI Assistant
+                </h2>
+                <span class="text-xs text-taupe">Powered by Gemini</span>
+            </div>
+
+            <!-- Quick Actions -->
+            <div class="card p-4 space-y-3">
+                <h3 class="font-medium text-charcoal text-sm">Quick Actions</h3>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <button id="aiMorningPrep" class="ai-quick-btn flex items-center gap-2 p-3 bg-cream border border-border rounded-lg text-sm text-slate hover:border-action hover:text-charcoal transition-colors text-left">
+                        <i data-lucide="sunrise" class="w-5 h-5 text-amber shrink-0"></i>
+                        <div>
+                            <div class="font-medium">Morning Standup Prep</div>
+                            <div class="text-xs text-taupe">Questions for 10 AM call</div>
+                        </div>
+                    </button>
+                    <button id="aiEveningPrep" class="ai-quick-btn flex items-center gap-2 p-3 bg-cream border border-border rounded-lg text-sm text-slate hover:border-action hover:text-charcoal transition-colors text-left">
+                        <i data-lucide="sunset" class="w-5 h-5 text-action shrink-0"></i>
+                        <div>
+                            <div class="font-medium">Evening Update Prep</div>
+                            <div class="text-xs text-taupe">Follow-up for 6:30 PM</div>
+                        </div>
+                    </button>
+                    <button id="aiFridayReview" class="ai-quick-btn flex items-center gap-2 p-3 bg-cream border border-border rounded-lg text-sm text-slate hover:border-action hover:text-charcoal transition-colors text-left">
+                        <i data-lucide="calendar-check" class="w-5 h-5 text-sage shrink-0"></i>
+                        <div>
+                            <div class="font-medium">Friday Weekly Review</div>
+                            <div class="text-xs text-taupe">Prep for 4:30 PM call</div>
+                        </div>
+                    </button>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button id="aiTeamSummary" class="ai-quick-btn flex items-center gap-2 p-3 bg-cream border border-border rounded-lg text-sm text-slate hover:border-action hover:text-charcoal transition-colors text-left">
+                        <i data-lucide="users" class="w-5 h-5 text-dusty shrink-0"></i>
+                        <div>
+                            <div class="font-medium">Team Overview</div>
+                            <div class="text-xs text-taupe">This week's team performance</div>
+                        </div>
+                    </button>
+                    <button id="aiConcerns" class="ai-quick-btn flex items-center gap-2 p-3 bg-cream border border-border rounded-lg text-sm text-slate hover:border-action hover:text-charcoal transition-colors text-left">
+                        <i data-lucide="alert-triangle" class="w-5 h-5 text-terracotta shrink-0"></i>
+                        <div>
+                            <div class="font-medium">Flag Concerns</div>
+                            <div class="text-xs text-taupe">Who needs attention?</div>
+                        </div>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Per-Employee Quick Ask -->
+            <div class="card p-4 space-y-3">
+                <h3 class="font-medium text-charcoal text-sm">Ask About Employee</h3>
+                <div id="aiEmployeeButtons" class="flex flex-wrap gap-2"></div>
+            </div>
+
+            <!-- Chat Interface -->
+            <div class="card p-4 space-y-3">
+                <h3 class="font-medium text-charcoal text-sm">Ask AI Anything</h3>
+                <div class="flex gap-2">
+                    <input type="text" id="aiChatInput" class="input-field flex-1" placeholder="e.g. What has Akshay done this week? Who is consistently late?">
+                    <button id="aiChatSend" class="btn-primary px-4 flex items-center gap-1">
+                        <i data-lucide="send" class="w-4 h-4"></i>
+                    </button>
+                </div>
+                <div class="flex flex-wrap gap-1">
+                    <button class="ai-suggestion text-xs px-2 py-1 bg-cream border border-border rounded-full text-taupe hover:text-charcoal hover:border-action transition-colors">Who was absent most this week?</button>
+                    <button class="ai-suggestion text-xs px-2 py-1 bg-cream border border-border rounded-full text-taupe hover:text-charcoal hover:border-action transition-colors">Any ghost promises today?</button>
+                    <button class="ai-suggestion text-xs px-2 py-1 bg-cream border border-border rounded-full text-taupe hover:text-charcoal hover:border-action transition-colors">Team reliability trend</button>
+                    <button class="ai-suggestion text-xs px-2 py-1 bg-cream border border-border rounded-full text-taupe hover:text-charcoal hover:border-action transition-colors">Summarize yesterday&apos;s standup</button>
+                </div>
+            </div>
+
+            <!-- AI Response Area -->
+            <div id="aiResponseArea" class="space-y-3"></div>
         </div>
     </template>
 

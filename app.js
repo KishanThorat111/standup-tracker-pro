@@ -1685,6 +1685,296 @@ async function analyzeWithGemini(employeeId) {
 // AI-READY DATA EXPORT
 // ============================================
 
+// Build team data payload for AI queries
+async function buildTeamDataForAI(daysBack = 7) {
+    const employees = await db.employees.toArray();
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - daysBack);
+    const cutoffStr = formatDate(cutoff);
+
+    const allRecords = await db.attendance_records
+        .filter(r => r.date >= cutoffStr)
+        .toArray();
+
+    return {
+        today: AppState.currentDate,
+        manager: AppState.settings.manager_name || 'Manager',
+        schedule: {
+            morning_standup: '10:00 AM - 10:30 AM IST',
+            evening_update: '6:30 PM - 7:00 PM IST',
+            friday_weekly_review: '4:30 PM - 6:00 PM IST (Fridays)'
+        },
+        employees: employees.filter(e => e.is_active).map(emp => {
+            const empRecords = allRecords
+                .filter(r => r.employee_id === emp.id)
+                .sort((a, b) => b.date.localeCompare(a.date));
+
+            return {
+                name: emp.full_name,
+                role: emp.role,
+                team: emp.team,
+                trust_score: emp.trust_score,
+                days_tracked: empRecords.length,
+                records: empRecords.map(r => ({
+                    date: r.date,
+                    morning_status: STATUS_CONFIG[r.morning?.status]?.label || 'Not recorded',
+                    morning_notes: r.morning?.notes || '',
+                    morning_async: r.morning?.async_content || '',
+                    morning_time: r.morning?.timestamp || null,
+                    morning_lag_min: r.morning?.response_lag_minutes || 0,
+                    evening_status: STATUS_CONFIG[r.evening?.status]?.label || 'Not recorded',
+                    evening_notes: r.evening?.notes || '',
+                    evening_async: r.evening?.async_content || '',
+                    is_ghost: r.morning?.status === 'present_ghost',
+                    is_fake: r.morning?.status === 'absent_fake_excuse',
+                    verification: r.morning?.verification_status || 'N/A'
+                }))
+            };
+        })
+    };
+}
+
+// Build data for a single employee
+async function buildEmployeeDataForAI(employeeId, daysBack = 14) {
+    const employee = await db.employees.get(employeeId);
+    if (!employee) return null;
+
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - daysBack);
+
+    const records = await db.attendance_records
+        .where('employee_id').equals(employeeId)
+        .filter(r => r.date >= formatDate(cutoff))
+        .toArray();
+
+    records.sort((a, b) => b.date.localeCompare(a.date));
+
+    return {
+        name: employee.full_name,
+        role: employee.role,
+        team: employee.team,
+        trust_score: employee.trust_score,
+        records: records.map(r => ({
+            date: r.date,
+            morning_status: STATUS_CONFIG[r.morning?.status]?.label || 'Not recorded',
+            morning_notes: r.morning?.notes || '',
+            morning_async: r.morning?.async_content || '',
+            evening_status: STATUS_CONFIG[r.evening?.status]?.label || 'Not recorded',
+            evening_notes: r.evening?.notes || '',
+            evening_async: r.evening?.async_content || '',
+            is_ghost: r.morning?.status === 'present_ghost',
+            is_fake: r.morning?.status === 'absent_fake_excuse'
+        }))
+    };
+}
+
+// Send query to AI chat endpoint
+async function askAI(question, teamData, mode = 'chat') {
+    const apiKey = await getGeminiApiKey();
+    if (!apiKey) {
+        showToast('Please add your Gemini API key in Settings first', 'warning');
+        return null;
+    }
+
+    const data = await apiCall('/ai/chat', {
+        method: 'POST',
+        body: JSON.stringify({ apiKey, question, teamData, mode })
+    });
+
+    return data.response;
+}
+
+// ============================================
+// AI ASSISTANT SCREEN
+// ============================================
+
+function renderAIAssistant() {
+    const mainContent = document.getElementById('mainContent');
+    const template = document.getElementById('aiAssistantTemplate');
+    mainContent.innerHTML = '';
+    mainContent.appendChild(template.content.cloneNode(true));
+
+    // Render employee quick-ask buttons
+    const btnContainer = document.getElementById('aiEmployeeButtons');
+    AppState.employees.filter(e => e.is_active).forEach(emp => {
+        const btn = document.createElement('button');
+        btn.className = 'ai-emp-btn flex items-center gap-1.5 px-3 py-1.5 bg-cream border border-border rounded-full text-sm text-slate hover:border-action hover:text-charcoal transition-colors';
+        btn.innerHTML = `<span class="w-6 h-6 bg-slate/20 rounded-full flex items-center justify-center text-[10px] font-semibold text-slate">${escapeHtml(getInitials(emp.full_name))}</span> ${escapeHtml(emp.full_name)}`;
+        btn.addEventListener('click', () => handleAIEmployeeAsk(emp));
+        btnContainer.appendChild(btn);
+    });
+
+    // Quick action buttons
+    document.getElementById('aiMorningPrep').addEventListener('click', handleMorningPrep);
+    document.getElementById('aiEveningPrep').addEventListener('click', handleEveningPrep);
+    document.getElementById('aiFridayReview').addEventListener('click', handleFridayReview);
+    document.getElementById('aiTeamSummary').addEventListener('click', handleTeamSummary);
+    document.getElementById('aiConcerns').addEventListener('click', handleConcerns);
+
+    // Chat input
+    const chatInput = document.getElementById('aiChatInput');
+    const chatSend = document.getElementById('aiChatSend');
+
+    chatSend.addEventListener('click', () => handleAIChatSend(chatInput));
+    chatInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') handleAIChatSend(chatInput);
+    });
+
+    // Suggestion chips
+    document.querySelectorAll('.ai-suggestion').forEach(chip => {
+        chip.addEventListener('click', () => {
+            chatInput.value = chip.textContent;
+            handleAIChatSend(chatInput);
+        });
+    });
+
+    lucide.createIcons();
+}
+
+function addAIResponse(title, icon, content, isLoading = false) {
+    const area = document.getElementById('aiResponseArea');
+    const card = document.createElement('div');
+    card.className = 'card p-4 space-y-2 ai-response-card';
+
+    if (isLoading) {
+        card.innerHTML = `
+            <div class="flex items-center gap-2">
+                <i data-lucide="${icon}" class="w-4 h-4 text-action"></i>
+                <span class="font-medium text-charcoal text-sm">${escapeHtml(title)}</span>
+            </div>
+            <div class="animate-pulse space-y-2">
+                <div class="h-3 bg-cream rounded w-3/4"></div>
+                <div class="h-3 bg-cream rounded w-1/2"></div>
+                <div class="h-3 bg-cream rounded w-5/6"></div>
+                <div class="h-3 bg-cream rounded w-2/3"></div>
+            </div>
+        `;
+    } else {
+        card.innerHTML = `
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                    <i data-lucide="${icon}" class="w-4 h-4 text-action"></i>
+                    <span class="font-medium text-charcoal text-sm">${escapeHtml(title)}</span>
+                </div>
+                <span class="text-[10px] text-taupe">${new Date().toLocaleTimeString()}</span>
+            </div>
+            <div class="text-sm text-slate whitespace-pre-wrap leading-relaxed ai-text">${escapeHtml(content)}</div>
+        `;
+    }
+
+    area.insertBefore(card, area.firstChild);
+    lucide.createIcons();
+    return card;
+}
+
+async function handleAIChatSend(input) {
+    const question = input.value.trim();
+    if (!question) return;
+    input.value = '';
+
+    const loadingCard = addAIResponse(question, 'message-circle', '', true);
+
+    try {
+        const teamData = await buildTeamDataForAI(14);
+        const response = await askAI(question, teamData, 'chat');
+        loadingCard.remove();
+        addAIResponse(question, 'message-circle', response || 'No response from AI');
+    } catch (err) {
+        loadingCard.remove();
+        addAIResponse(question, 'alert-circle', 'Error: ' + err.message);
+    }
+}
+
+async function handleAIEmployeeAsk(employee) {
+    const loadingCard = addAIResponse(`About ${employee.full_name}`, 'user', '', true);
+
+    try {
+        const empData = await buildEmployeeDataForAI(employee.id, 14);
+        const question = `Give me a complete overview of ${employee.full_name}. What have they been doing recently? What's their attendance like? Any concerns? What should I ask them in the next standup?`;
+        const response = await askAI(question, { employee: empData, today: AppState.currentDate }, 'chat');
+        loadingCard.remove();
+        addAIResponse(`About ${employee.full_name}`, 'user', response || 'No response');
+    } catch (err) {
+        loadingCard.remove();
+        addAIResponse(`About ${employee.full_name}`, 'alert-circle', 'Error: ' + err.message);
+    }
+}
+
+async function handleMorningPrep() {
+    const loadingCard = addAIResponse('Morning Standup Prep (10 AM)', 'sunrise', '', true);
+
+    try {
+        const teamData = await buildTeamDataForAI(7);
+        const question = `Prepare me for today's MORNING STANDUP (10:00 AM). Today is ${AppState.currentDate}. For each active team member, tell me what they said yesterday, any patterns I should know about, and specific questions I should ask them today. Include any follow-ups from previous days.`;
+        const response = await askAI(question, teamData, 'morning_prep');
+        loadingCard.remove();
+        addAIResponse('Morning Standup Prep (10 AM)', 'sunrise', response || 'No response');
+    } catch (err) {
+        loadingCard.remove();
+        addAIResponse('Morning Standup Prep', 'alert-circle', 'Error: ' + err.message);
+    }
+}
+
+async function handleEveningPrep() {
+    const loadingCard = addAIResponse('Evening Update Prep (6:30 PM)', 'sunset', '', true);
+
+    try {
+        const teamData = await buildTeamDataForAI(3);
+        const question = `Prepare me for today's EVENING UPDATE (6:30 PM). Today is ${AppState.currentDate}. For each team member who was present this morning, what did they commit to doing? What should I verify in their evening update? Flag anyone who made vague morning promises that might become ghost promises.`;
+        const response = await askAI(question, teamData, 'evening_prep');
+        loadingCard.remove();
+        addAIResponse('Evening Update Prep (6:30 PM)', 'sunset', response || 'No response');
+    } catch (err) {
+        loadingCard.remove();
+        addAIResponse('Evening Update Prep', 'alert-circle', 'Error: ' + err.message);
+    }
+}
+
+async function handleFridayReview() {
+    const loadingCard = addAIResponse('Friday Weekly Review Prep (4:30 PM)', 'calendar-check', '', true);
+
+    try {
+        const teamData = await buildTeamDataForAI(7);
+        const question = `Prepare me for the FRIDAY WEEKLY REVIEW CALL (4:30 PM - 6:00 PM). Today is ${AppState.currentDate}. For each team member, give me a comprehensive review of their entire week: attendance, what they worked on, any concerns, follow-ups needed, and specific discussion points for the call. End with an overall team summary.`;
+        const response = await askAI(question, teamData, 'friday_review');
+        loadingCard.remove();
+        addAIResponse('Friday Weekly Review Prep (4:30 PM)', 'calendar-check', response || 'No response');
+    } catch (err) {
+        loadingCard.remove();
+        addAIResponse('Friday Weekly Review', 'alert-circle', 'Error: ' + err.message);
+    }
+}
+
+async function handleTeamSummary() {
+    const loadingCard = addAIResponse('Team Overview - This Week', 'users', '', true);
+
+    try {
+        const teamData = await buildTeamDataForAI(7);
+        const question = `Give me a complete team performance overview for this week (ending ${AppState.currentDate}). Include attendance rates, top performers, concerns, and recommendations.`;
+        const response = await askAI(question, teamData, 'team_summary');
+        loadingCard.remove();
+        addAIResponse('Team Overview - This Week', 'users', response || 'No response');
+    } catch (err) {
+        loadingCard.remove();
+        addAIResponse('Team Overview', 'alert-circle', 'Error: ' + err.message);
+    }
+}
+
+async function handleConcerns() {
+    const loadingCard = addAIResponse('Flagged Concerns', 'alert-triangle', '', true);
+
+    try {
+        const teamData = await buildTeamDataForAI(14);
+        const question = `Identify ALL team concerns and red flags from the last 2 weeks (up to ${AppState.currentDate}). Who needs immediate attention? Any suspicious patterns? Ghost promise repeat offenders? Trust score concerns?`;
+        const response = await askAI(question, teamData, 'concerns');
+        loadingCard.remove();
+        addAIResponse('Flagged Concerns', 'alert-triangle', response || 'No response');
+    } catch (err) {
+        loadingCard.remove();
+        addAIResponse('Flagged Concerns', 'alert-circle', 'Error: ' + err.message);
+    }
+}
+
 async function exportAiData() {
     const employees = await db.employees.toArray();
     const allRecords = await db.attendance_records.toArray();
@@ -2316,6 +2606,7 @@ function initNavigation() {
                 case 'verification': renderVerification(); break;
                 case 'team': renderTeam(); break;
                 case 'reports': renderReports(); break;
+                case 'ai': renderAIAssistant(); break;
             }
         });
     });
