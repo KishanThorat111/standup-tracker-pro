@@ -23,6 +23,191 @@ const STATUS_CONFIG = {
 const STANDUP_TIME = '09:00'; // 9 AM default standup time
 
 // ============================================
+// AUTH & API CLIENT
+// ============================================
+
+const API_BASE = '/api';
+
+const AuthState = {
+    token: localStorage.getItem('auth_token'),
+    user: JSON.parse(localStorage.getItem('auth_user') || 'null'),
+
+    isAuthenticated() {
+        return !!this.token;
+    },
+
+    setAuth(token, user) {
+        this.token = token;
+        this.user = user;
+        localStorage.setItem('auth_token', token);
+        localStorage.setItem('auth_user', JSON.stringify(user));
+    },
+
+    clearAuth() {
+        this.token = null;
+        this.user = null;
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_user');
+    }
+};
+
+async function apiCall(path, options = {}) {
+    const headers = {
+        'Content-Type': 'application/json',
+        ...options.headers
+    };
+
+    if (AuthState.token) {
+        headers['Authorization'] = `Bearer ${AuthState.token}`;
+    }
+
+    const response = await fetch(`${API_BASE}${path}`, {
+        ...options,
+        headers
+    });
+
+    if (response.status === 401) {
+        AuthState.clearAuth();
+        showAuthScreen();
+        throw new Error('Session expired. Please login again.');
+    }
+
+    const data = await response.json();
+
+    if (!response.ok) {
+        throw new Error(data.error || 'API request failed');
+    }
+
+    return data;
+}
+
+function showAuthScreen() {
+    document.getElementById('app').classList.add('hidden');
+    document.getElementById('authScreen').classList.remove('hidden');
+    initAuthUI();
+    lucide.createIcons();
+}
+
+function hideAuthScreen() {
+    document.getElementById('authScreen').classList.add('hidden');
+    document.getElementById('app').classList.remove('hidden');
+}
+
+let authUIInitialized = false;
+function initAuthUI() {
+    if (authUIInitialized) return;
+    authUIInitialized = true;
+
+    document.getElementById('loginTab').addEventListener('click', () => {
+        document.getElementById('loginForm').classList.remove('hidden');
+        document.getElementById('registerForm').classList.add('hidden');
+        document.getElementById('loginTab').className = 'flex-1 py-2 rounded-md text-sm font-medium bg-action text-white transition-colors';
+        document.getElementById('registerTab').className = 'flex-1 py-2 rounded-md text-sm font-medium text-slate hover:text-charcoal transition-colors';
+        document.getElementById('authError').classList.add('hidden');
+    });
+
+    document.getElementById('registerTab').addEventListener('click', () => {
+        document.getElementById('registerForm').classList.remove('hidden');
+        document.getElementById('loginForm').classList.add('hidden');
+        document.getElementById('registerTab').className = 'flex-1 py-2 rounded-md text-sm font-medium bg-action text-white transition-colors';
+        document.getElementById('loginTab').className = 'flex-1 py-2 rounded-md text-sm font-medium text-slate hover:text-charcoal transition-colors';
+        document.getElementById('authError').classList.add('hidden');
+    });
+
+    document.getElementById('loginBtn').addEventListener('click', handleLogin);
+    document.getElementById('loginPassword').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') handleLogin();
+    });
+
+    document.getElementById('registerBtn').addEventListener('click', handleRegister);
+    document.getElementById('registerPassword').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') handleRegister();
+    });
+}
+
+async function handleLogin() {
+    const email = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    const errorEl = document.getElementById('authError');
+    const btn = document.getElementById('loginBtn');
+
+    if (!email || !password) {
+        errorEl.textContent = 'Please fill in all fields';
+        errorEl.classList.remove('hidden');
+        return;
+    }
+
+    try {
+        btn.disabled = true;
+        btn.textContent = 'Signing in...';
+
+        const data = await apiCall('/auth/login', {
+            method: 'POST',
+            body: JSON.stringify({ email, password })
+        });
+
+        AuthState.setAuth(data.token, data.user);
+        errorEl.classList.add('hidden');
+        hideAuthScreen();
+        await initApp();
+    } catch (err) {
+        errorEl.textContent = err.message;
+        errorEl.classList.remove('hidden');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Sign In';
+    }
+}
+
+async function handleRegister() {
+    const name = document.getElementById('registerName').value.trim();
+    const email = document.getElementById('registerEmail').value.trim();
+    const password = document.getElementById('registerPassword').value;
+    const errorEl = document.getElementById('authError');
+    const btn = document.getElementById('registerBtn');
+
+    if (!name || !email || !password) {
+        errorEl.textContent = 'Please fill in all fields';
+        errorEl.classList.remove('hidden');
+        return;
+    }
+
+    if (password.length < 6) {
+        errorEl.textContent = 'Password must be at least 6 characters';
+        errorEl.classList.remove('hidden');
+        return;
+    }
+
+    try {
+        btn.disabled = true;
+        btn.textContent = 'Creating account...';
+
+        const data = await apiCall('/auth/register', {
+            method: 'POST',
+            body: JSON.stringify({ name, email, password })
+        });
+
+        AuthState.setAuth(data.token, data.user);
+        errorEl.classList.add('hidden');
+        hideAuthScreen();
+        await initApp();
+    } catch (err) {
+        errorEl.textContent = err.message;
+        errorEl.classList.remove('hidden');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Create Account';
+    }
+}
+
+function handleLogout() {
+    if (confirm('Are you sure you want to logout?')) {
+        AuthState.clearAuth();
+        showAuthScreen();
+    }
+}
+
+// ============================================
 // DATABASE INITIALIZATION
 // ============================================
 
@@ -437,6 +622,7 @@ async function saveAttendance(employeeId, session, data) {
     }
     
     updateSyncIndicator('synced');
+    debouncedCloudSync();
     
     return record;
 }
@@ -1168,6 +1354,7 @@ async function renderTeamList() {
             if (confirm(`${action} ${employee.full_name}?`)) {
                 await db.employees.update(employee.id, { is_active: !employee.is_active });
                 await AppState.loadEmployees();
+                debouncedCloudSync();
                 renderTeamList();
                 showToast(`Employee ${action.toLowerCase()}d`, 'info');
             }
@@ -1367,6 +1554,134 @@ function downloadFile(content, filename, mimeType) {
 }
 
 // ============================================
+// CLOUD SYNC
+// ============================================
+
+async function syncToCloud() {
+    if (!AuthState.isAuthenticated()) return;
+
+    try {
+        updateSyncIndicator('pending');
+
+        const employees = await db.employees.toArray();
+        const attendance_records = await db.attendance_records.toArray();
+        const settings = await db.app_settings.get('main');
+
+        await apiCall('/sync/push', {
+            method: 'POST',
+            body: JSON.stringify({ employees, attendance_records, settings })
+        });
+
+        // Update last sync time
+        await db.app_settings.update('main', { last_cloud_sync: new Date().toISOString() });
+        updateSyncIndicator('synced');
+    } catch (err) {
+        console.error('Cloud sync failed:', err);
+        updateSyncIndicator('offline');
+    }
+}
+
+async function syncFromCloud() {
+    if (!AuthState.isAuthenticated()) return;
+
+    try {
+        updateSyncIndicator('pending');
+
+        const data = await apiCall('/sync/pull');
+
+        // Only replace local data if cloud has data
+        if (data.employees?.length || data.attendance_records?.length) {
+            if (data.employees?.length) {
+                await db.employees.clear();
+                await db.employees.bulkAdd(data.employees);
+            }
+            if (data.attendance_records?.length) {
+                await db.attendance_records.clear();
+                await db.attendance_records.bulkAdd(data.attendance_records);
+            }
+            if (data.settings) {
+                const existing = await db.app_settings.get('main') || {};
+                await db.app_settings.put({ ...existing, ...data.settings, key: 'main' });
+            }
+
+            await AppState.loadEmployees();
+            await AppState.loadSettings();
+            await AppState.loadAttendanceForDate(AppState.currentDate);
+
+            showToast('Data synced from cloud', 'success');
+            if (AppState.currentScreen === 'dashboard') renderDashboard();
+        }
+
+        await db.app_settings.update('main', { last_cloud_sync: new Date().toISOString() });
+        updateSyncIndicator('synced');
+    } catch (err) {
+        console.error('Pull from cloud failed:', err);
+        showToast('Cloud sync failed', 'error');
+        updateSyncIndicator('offline');
+    }
+}
+
+const debouncedCloudSync = debounce(syncToCloud, 5000);
+
+// ============================================
+// GEMINI AI INTEGRATION
+// ============================================
+
+async function getGeminiApiKey() {
+    const settings = await db.app_settings.get('main');
+    return settings?.gemini_api_key || '';
+}
+
+async function analyzeWithGemini(employeeId) {
+    const apiKey = await getGeminiApiKey();
+    if (!apiKey) {
+        showToast('Please add your Gemini API key in Settings first', 'warning');
+        return null;
+    }
+
+    const employee = await db.employees.get(employeeId);
+    if (!employee) return null;
+
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const records = await db.attendance_records
+        .where('employee_id')
+        .equals(employeeId)
+        .filter(r => r.date >= formatDate(thirtyDaysAgo))
+        .toArray();
+
+    records.sort((a, b) => b.date.localeCompare(a.date));
+
+    const employeeData = {
+        name: employee.full_name,
+        role: employee.role,
+        team: employee.team,
+        trust_score: employee.trust_score,
+        total_days_tracked: records.length,
+        records: records.map(r => ({
+            date: r.date,
+            morning_status: STATUS_CONFIG[r.morning?.status]?.label || 'Not recorded',
+            morning_notes: r.morning?.notes || '',
+            evening_status: STATUS_CONFIG[r.evening?.status]?.label || 'Not recorded',
+            evening_notes: r.evening?.notes || '',
+            lag_minutes: r.morning?.response_lag_minutes || 0
+        }))
+    };
+
+    try {
+        const data = await apiCall('/ai/analyze', {
+            method: 'POST',
+            body: JSON.stringify({ apiKey, employeeData })
+        });
+        return data.analysis;
+    } catch (err) {
+        showToast('AI analysis failed: ' + err.message, 'error');
+        return null;
+    }
+}
+
+// ============================================
 // AI-READY DATA EXPORT
 // ============================================
 
@@ -1489,6 +1804,7 @@ function showAddEmployeeModal() {
         
         await db.employees.add(employee);
         await AppState.loadEmployees();
+        debouncedCloudSync();
         
         showToast('Employee added successfully', 'success');
         closeModal();
@@ -1541,6 +1857,7 @@ async function showEditEmployeeModal(employeeId) {
         });
 
         await AppState.loadEmployees();
+        debouncedCloudSync();
         showToast('Employee updated successfully', 'success');
         closeModal();
 
@@ -1818,11 +2135,43 @@ async function showEmployeeProfile(employeeId) {
                 }).join('')}
             </div>
         </div>
+        
+        <!-- AI Analysis -->
+        <div>
+            <button class="ai-analyze-btn btn-primary w-full flex items-center justify-center gap-2">
+                <i data-lucide="sparkles" class="w-4 h-4"></i>
+                AI Analysis (Gemini)
+            </button>
+            <div class="ai-result hidden mt-3 bg-cream border border-dusty/30 rounded-lg p-4">
+                <div class="flex items-center gap-2 mb-2">
+                    <i data-lucide="sparkles" class="w-4 h-4 text-action"></i>
+                    <span class="font-medium text-charcoal text-sm">AI Insights</span>
+                </div>
+                <div class="ai-result-text text-sm text-slate whitespace-pre-wrap leading-relaxed"></div>
+            </div>
+        </div>
     `;
     
     content.querySelector('.edit-profile-btn').addEventListener('click', () => {
         closeModal();
         showEditEmployeeModal(employeeId);
+    });
+
+    content.querySelector('.ai-analyze-btn').addEventListener('click', async function() {
+        this.disabled = true;
+        this.innerHTML = '<span class="animate-pulse">Analyzing with Gemini...</span>';
+
+        const analysis = await analyzeWithGemini(employeeId);
+
+        this.disabled = false;
+        this.innerHTML = '<i data-lucide="sparkles" class="w-4 h-4"></i> AI Analysis (Gemini)';
+        lucide.createIcons();
+
+        if (analysis) {
+            const resultDiv = content.querySelector('.ai-result');
+            resultDiv.classList.remove('hidden');
+            resultDiv.querySelector('.ai-result-text').textContent = analysis;
+        }
     });
     
     showModal(content);
@@ -1833,12 +2182,54 @@ function showSettingsModal() {
     const content = template.content.cloneNode(true);
     
     content.getElementById('settingManagerName').value = AppState.settings.manager_name || '';
+    content.getElementById('settingGeminiKey').value = AppState.settings.gemini_api_key || '';
+
+    // Show last sync time
+    const lastSync = AppState.settings.last_cloud_sync;
+    const lastSyncEl = content.getElementById('lastSyncInfo');
+    if (lastSync) {
+        lastSyncEl.textContent = `Last synced: ${new Date(lastSync).toLocaleString()}`;
+    }
+
+    // Toggle API key visibility
+    content.getElementById('toggleKeyVisibility').addEventListener('click', () => {
+        const input = document.getElementById('settingGeminiKey');
+        input.type = input.type === 'password' ? 'text' : 'password';
+    });
     
     content.getElementById('saveSettingsBtn').addEventListener('click', async () => {
         const name = document.getElementById('settingManagerName').value;
-        await db.app_settings.update('main', { manager_name: name });
+        const geminiKey = document.getElementById('settingGeminiKey').value.trim();
+        await db.app_settings.update('main', { manager_name: name, gemini_api_key: geminiKey });
         await AppState.loadSettings();
+        debouncedCloudSync();
         showToast('Settings saved', 'success');
+        closeModal();
+    });
+
+    // Cloud sync buttons
+    content.getElementById('syncPushBtn').addEventListener('click', async () => {
+        const btn = document.getElementById('syncPushBtn');
+        btn.disabled = true;
+        btn.textContent = 'Uploading...';
+        await syncToCloud();
+        btn.disabled = false;
+        btn.innerHTML = '<i data-lucide="cloud-upload" class="w-4 h-4"></i> Upload to Cloud';
+        lucide.createIcons();
+        const syncInfo = document.getElementById('lastSyncInfo');
+        if (syncInfo) syncInfo.textContent = `Last synced: ${new Date().toLocaleString()}`;
+        showToast('Data uploaded to cloud', 'success');
+    });
+
+    content.getElementById('syncPullBtn').addEventListener('click', async () => {
+        if (!confirm('This will replace local data with cloud data. Continue?')) return;
+        const btn = document.getElementById('syncPullBtn');
+        btn.disabled = true;
+        btn.textContent = 'Downloading...';
+        await syncFromCloud();
+        btn.disabled = false;
+        btn.innerHTML = '<i data-lucide="cloud-download" class="w-4 h-4"></i> Download from Cloud';
+        lucide.createIcons();
         closeModal();
     });
     
@@ -1930,6 +2321,8 @@ function initNavigation() {
     });
     
     document.getElementById('settingsBtn').addEventListener('click', showSettingsModal);
+    document.getElementById('logoutBtn').addEventListener('click', handleLogout);
+    document.getElementById('syncIndicator').addEventListener('click', syncToCloud);
 }
 
 function updateSyncIndicator(status) {
@@ -2031,6 +2424,11 @@ async function initApp() {
         
         renderDashboard();
         
+        // Auto-sync from cloud on first load after login
+        if (AuthState.isAuthenticated()) {
+            syncFromCloud().catch(() => {});
+        }
+        
         console.log('Standup Tracker Pro initialized');
     } catch (err) {
         console.error('App initialization failed:', err);
@@ -2044,4 +2442,19 @@ async function initApp() {
     }
 }
 
-document.addEventListener('DOMContentLoaded', initApp);
+async function startApp() {
+    if (AuthState.isAuthenticated()) {
+        try {
+            await apiCall('/auth/me');
+            hideAuthScreen();
+            await initApp();
+        } catch {
+            AuthState.clearAuth();
+            showAuthScreen();
+        }
+    } else {
+        showAuthScreen();
+    }
+}
+
+document.addEventListener('DOMContentLoaded', startApp);

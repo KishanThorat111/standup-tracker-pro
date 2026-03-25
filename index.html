@@ -236,7 +236,55 @@
     </style>
 </head>
 <body>
-    <div id="app" class="min-h-screen flex flex-col">
+    <!-- Auth Screen -->
+    <div id="authScreen" class="min-h-screen flex items-center justify-center p-4 bg-cream">
+        <div class="bg-card rounded-xl shadow-warm-lg border border-border p-8 w-full max-w-md">
+            <div class="text-center mb-8">
+                <div class="w-16 h-16 bg-action rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-warm">
+                    <i data-lucide="clipboard-check" class="w-8 h-8 text-white"></i>
+                </div>
+                <h1 class="text-2xl font-bold text-charcoal">Standup Tracker Pro</h1>
+                <p class="text-taupe mt-1">Sign in to access your data securely</p>
+            </div>
+
+            <div class="flex gap-1 bg-cream rounded-lg p-1 mb-6">
+                <button id="loginTab" class="flex-1 py-2 rounded-md text-sm font-medium bg-action text-white transition-colors">Login</button>
+                <button id="registerTab" class="flex-1 py-2 rounded-md text-sm font-medium text-slate hover:text-charcoal transition-colors">Register</button>
+            </div>
+
+            <div id="loginForm" class="space-y-4">
+                <div>
+                    <label class="block text-sm text-slate mb-2">Email</label>
+                    <input type="email" id="loginEmail" class="input-field w-full" placeholder="you@company.com" autocomplete="email">
+                </div>
+                <div>
+                    <label class="block text-sm text-slate mb-2">Password</label>
+                    <input type="password" id="loginPassword" class="input-field w-full" placeholder="Enter your password" autocomplete="current-password">
+                </div>
+                <button id="loginBtn" class="btn-primary w-full">Sign In</button>
+            </div>
+
+            <div id="registerForm" class="space-y-4 hidden">
+                <div>
+                    <label class="block text-sm text-slate mb-2">Full Name</label>
+                    <input type="text" id="registerName" class="input-field w-full" placeholder="Your name" autocomplete="name">
+                </div>
+                <div>
+                    <label class="block text-sm text-slate mb-2">Email</label>
+                    <input type="email" id="registerEmail" class="input-field w-full" placeholder="you@company.com" autocomplete="email">
+                </div>
+                <div>
+                    <label class="block text-sm text-slate mb-2">Password</label>
+                    <input type="password" id="registerPassword" class="input-field w-full" placeholder="Min 6 characters" autocomplete="new-password">
+                </div>
+                <button id="registerBtn" class="btn-primary w-full">Create Account</button>
+            </div>
+
+            <p id="authError" class="hidden mt-4 text-sm text-terracotta text-center"></p>
+        </div>
+    </div>
+
+    <div id="app" class="min-h-screen flex flex-col hidden">
         <!-- Noscript fallback -->
         <noscript>
             <div style="text-align:center;padding:40px;font-family:sans-serif">
@@ -258,13 +306,16 @@
                     </div>
                 </div>
                 
-                <div class="flex items-center gap-3">
-                    <button id="syncIndicator" class="flex items-center gap-2 px-3 py-2 rounded-lg bg-card border border-border text-sm transition-colors">
+                <div class="flex items-center gap-2">
+                    <button id="syncIndicator" class="flex items-center gap-2 px-3 py-2 rounded-lg bg-card border border-border text-sm transition-colors" title="Click to sync to cloud">
                         <span id="syncDot" class="sync-dot sync-green"></span>
                         <span id="syncText" class="text-slate">Synced</span>
                     </button>
-                    <button id="settingsBtn" class="p-2 rounded-lg bg-card border border-border hover:bg-cream transition-colors">
+                    <button id="settingsBtn" class="p-2 rounded-lg bg-card border border-border hover:bg-cream transition-colors" title="Settings">
                         <i data-lucide="settings" class="w-5 h-5 text-slate"></i>
+                    </button>
+                    <button id="logoutBtn" class="p-2 rounded-lg bg-card border border-border hover:bg-cream transition-colors" title="Logout">
+                        <i data-lucide="log-out" class="w-5 h-5 text-taupe"></i>
                     </button>
                 </div>
             </div>
@@ -822,6 +873,43 @@
                 <div>
                     <label class="block text-sm text-slate mb-2">Manager Name</label>
                     <input type="text" id="settingManagerName" class="input-field w-full" placeholder="Your name">
+                </div>
+            </div>
+
+            <!-- Gemini AI Section -->
+            <div class="border-t border-border pt-4 space-y-3">
+                <h3 class="font-medium text-charcoal flex items-center gap-2">
+                    <i data-lucide="sparkles" class="w-4 h-4 text-action"></i>
+                    Gemini AI
+                </h3>
+                <div>
+                    <label class="block text-sm text-slate mb-2">API Key</label>
+                    <div class="relative">
+                        <input type="password" id="settingGeminiKey" class="input-field w-full pr-10" placeholder="Enter your Gemini API key">
+                        <button id="toggleKeyVisibility" class="absolute right-3 top-3 text-taupe hover:text-slate" type="button">
+                            <i data-lucide="eye" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+                    <p class="text-xs text-taupe mt-1">Get your key from <b>Google AI Studio</b> (aistudio.google.com)</p>
+                </div>
+            </div>
+
+            <!-- Cloud Sync Section -->
+            <div class="border-t border-border pt-4 space-y-3">
+                <h3 class="font-medium text-charcoal flex items-center gap-2">
+                    <i data-lucide="cloud" class="w-4 h-4 text-dusty"></i>
+                    Cloud Sync
+                </h3>
+                <p id="lastSyncInfo" class="text-xs text-taupe">Last synced: Never</p>
+                <div class="flex gap-3">
+                    <button id="syncPushBtn" class="flex-1 btn-secondary flex items-center justify-center gap-2 text-sm py-2">
+                        <i data-lucide="cloud-upload" class="w-4 h-4"></i>
+                        Upload to Cloud
+                    </button>
+                    <button id="syncPullBtn" class="flex-1 btn-secondary flex items-center justify-center gap-2 text-sm py-2">
+                        <i data-lucide="cloud-download" class="w-4 h-4"></i>
+                        Download from Cloud
+                    </button>
                 </div>
             </div>
             
