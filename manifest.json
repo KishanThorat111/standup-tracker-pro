@@ -1,0 +1,55 @@
+{
+    "name": "Standup Tracker Pro",
+    "short_name": "Standup Pro",
+    "description": "Forensic Attendance Management for Remote Teams",
+    "version": "1.0.0",
+    "start_url": "./",
+    "display": "standalone",
+    "background_color": "#F7F5F0",
+    "theme_color": "#F7F5F0",
+    "orientation": "portrait-primary",
+    "scope": "./",
+    "lang": "en",
+    "dir": "ltr",
+    "categories": ["productivity", "business"],
+    "icons": [
+        {
+            "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect fill='%23E07A5F' width='192' height='192' rx='24'/%3E%3Ctext x='96' y='125' font-size='90' text-anchor='middle' fill='white'%3E%E2%9C%93%3C/text%3E%3C/svg%3E",
+            "sizes": "192x192",
+            "type": "image/svg+xml",
+            "purpose": "any maskable"
+        },
+        {
+            "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect fill='%23E07A5F' width='512' height='512' rx='64'/%3E%3Ctext x='256' y='340' font-size='240' text-anchor='middle' fill='white'%3E%E2%9C%93%3C/text%3E%3C/svg%3E",
+            "sizes": "512x512",
+            "type": "image/svg+xml",
+            "purpose": "any maskable"
+        }
+    ],
+    "screenshots": [
+        {
+            "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1280 720'%3E%3Crect fill='%23F7F5F0' width='1280' height='720'/%3E%3Ctext x='640' y='360' font-size='48' text-anchor='middle' fill='%232D3748'%3EStandup Tracker Pro%3C/text%3E%3C/svg%3E",
+            "sizes": "1280x720",
+            "type": "image/svg+xml",
+            "form_factor": "wide"
+        }
+    ],
+    "shortcuts": [
+        {
+            "name": "Dashboard",
+            "short_name": "Dashboard",
+            "description": "View today's attendance",
+            "url": "./?screen=dashboard",
+            "icons": [{ "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Crect fill='%237C9A6B' width='96' height='96' rx='12'/%3E%3Ctext x='48' y='65' font-size='45' text-anchor='middle' fill='white'%3ED%3C/text%3E%3C/svg%3E", "sizes": "96x96" }]
+        },
+        {
+            "name": "Reports",
+            "short_name": "Reports",
+            "description": "Generate attendance reports",
+            "url": "./?screen=reports",
+            "icons": [{ "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Crect fill='%236B8E9B' width='96' height='96' rx='12'/%3E%3Ctext x='48' y='65' font-size='45' text-anchor='middle' fill='white'%3ER%3C/text%3E%3C/svg%3E", "sizes": "96x96" }]
+        }
+    ],
+    "prefer_related_applications": false,
+    "display_override": ["standalone", "browser"]
+}
