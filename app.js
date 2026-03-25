@@ -1995,24 +1995,27 @@ function renderMarkdown(text) {
     if (!text) return '';
     let html = escapeHtml(text);
     // Headers
-    html = html.replace(/^### (.+)$/gm, '<h4 class="font-semibold text-charcoal mt-3 mb-1">$1</h4>');
-    html = html.replace(/^## (.+)$/gm, '<h3 class="font-semibold text-charcoal text-base mt-4 mb-1">$1</h3>');
-    // Bold
+    html = html.replace(/^###\s+(.+)$/gm, '<h4 class="font-semibold text-charcoal mt-3 mb-1">$1</h4>');
+    html = html.replace(/^##\s+(.+)$/gm, '<h3 class="font-semibold text-charcoal text-base mt-4 mb-1">$1</h3>');
+    // Bold (before bullet processing)
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong class="text-charcoal font-semibold">$1</strong>');
-    // Italic
-    html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-    // Bullet lists
-    html = html.replace(/^\* (.+)$/gm, '<li class="ml-4 list-disc">$1</li>');
-    html = html.replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>');
+    // Inline code
+    html = html.replace(/`([^`]+)`/g, '<code class="bg-cream px-1 rounded text-xs">$1</code>');
+    // Nested bullets (indented with spaces/tabs)
+    html = html.replace(/^[\t ]{2,}[*\-]\s+(.+)$/gm, '<li class="ml-8 list-circle text-sm">$1</li>');
+    // Top-level bullets
+    html = html.replace(/^[*\-]\s+(.+)$/gm, '<li class="ml-4 list-disc">$1</li>');
     // Numbered lists
-    html = html.replace(/^\d+\. (.+)$/gm, '<li class="ml-4 list-decimal">$1</li>');
-    // Wrap consecutive <li> items in <ul>/<ol>
-    html = html.replace(/((?:<li class="ml-4 list-disc">.+<\/li>\n?)+)/g, '<ul class="space-y-0.5 my-1">$1</ul>');
+    html = html.replace(/^\d+\.\s+(.+)$/gm, '<li class="ml-4 list-decimal">$1</li>');
+    // Wrap consecutive <li> in <ul>/<ol>
+    html = html.replace(/((?:<li class="ml-[48] list-(?:disc|circle)[^"]*">.+<\/li>\n?)+)/g, '<ul class="space-y-0.5 my-1">$1</ul>');
     html = html.replace(/((?:<li class="ml-4 list-decimal">.+<\/li>\n?)+)/g, '<ol class="space-y-0.5 my-1">$1</ol>');
-    // Line breaks (but not after block elements)
+    // Horizontal rules
+    html = html.replace(/^---$/gm, '<hr class="my-2 border-border">');
+    // Line breaks (not after block elements)
     html = html.replace(/\n(?!<[hulo])/g, '<br>');
-    // Clean up extra breaks after block elements
-    html = html.replace(/(<\/[hulo][l234]?>)\s*<br>/g, '$1');
+    // Clean up extra <br> after block elements
+    html = html.replace(/(<\/(?:h[34]|ul|ol|li|hr)>)\s*<br>/g, '$1');
     return html;
 }
 
@@ -2039,7 +2042,20 @@ async function handleAIEmployeeAsk(employee) {
 
     try {
         const empData = await buildEmployeeDataForAI(employee.id, 14);
-        const question = `Give me a complete overview of ${employee.full_name}. What have they been doing recently? What's their attendance like? Any concerns? What should I ask them in the next standup?`;
+        
+        // Check if there's any actual data
+        if (!empData || !empData.records || empData.records.length === 0) {
+            loadingCard.remove();
+            addAIResponse(`About ${employee.full_name}`, 'user', 
+                `No attendance records found for **${employee.full_name}** yet.\n\n` +
+                `**Role:** ${employee.role || 'Not set'}\n` +
+                `**Team:** ${employee.team || 'Not set'}\n` +
+                `**Trust Score:** ${employee.trust_score || 100}\n\n` +
+                `Start tracking their attendance on the Dashboard to get AI insights.`);
+            return;
+        }
+        
+        const question = `Brief overview of ${employee.full_name}: attendance summary, key notes, concerns, and 2 questions for next standup. Be concise.`;
         const response = await askAI(question, { employee: empData, today: AppState.currentDate }, 'chat');
         loadingCard.remove();
         addAIResponse(`About ${employee.full_name}`, 'user', response || 'No response');
@@ -2054,7 +2070,13 @@ async function handleMorningPrep() {
 
     try {
         const teamData = await buildTeamDataForAI(7);
-        const question = `Prepare me for today's MORNING STANDUP (10:00 AM). Today is ${AppState.currentDate}. For each active team member, tell me what they said yesterday, any patterns I should know about, and specific questions I should ask them today. Include any follow-ups from previous days.`;
+        const hasData = teamData.employees.some(e => e.records.length > 0);
+        if (!hasData) {
+            loadingCard.remove();
+            addAIResponse('Morning Standup Prep (10 AM)', 'sunrise', 'No attendance data recorded yet. Start tracking on the Dashboard first, then come back for AI-powered prep.');
+            return;
+        }
+        const question = `Prepare me for today's 10 AM standup. Today is ${AppState.currentDate}. Brief prep for each person.`;
         const response = await askAI(question, teamData, 'morning_prep');
         loadingCard.remove();
         addAIResponse('Morning Standup Prep (10 AM)', 'sunrise', response || 'No response');
@@ -2069,7 +2091,13 @@ async function handleEveningPrep() {
 
     try {
         const teamData = await buildTeamDataForAI(3);
-        const question = `Prepare me for today's EVENING UPDATE (6:30 PM). Today is ${AppState.currentDate}. For each team member who was present this morning, what did they commit to doing? What should I verify in their evening update? Flag anyone who made vague morning promises that might become ghost promises.`;
+        const hasData = teamData.employees.some(e => e.records.length > 0);
+        if (!hasData) {
+            loadingCard.remove();
+            addAIResponse('Evening Update Prep (6:30 PM)', 'sunset', 'No attendance data recorded yet. Start tracking on the Dashboard first.');
+            return;
+        }
+        const question = `Prepare me for today's 6:30 PM evening update. Today is ${AppState.currentDate}. Brief check for each present person.`;
         const response = await askAI(question, teamData, 'evening_prep');
         loadingCard.remove();
         addAIResponse('Evening Update Prep (6:30 PM)', 'sunset', response || 'No response');
@@ -2084,7 +2112,13 @@ async function handleFridayReview() {
 
     try {
         const teamData = await buildTeamDataForAI(7);
-        const question = `Prepare me for the FRIDAY WEEKLY REVIEW CALL (4:30 PM - 6:00 PM). Today is ${AppState.currentDate}. For each team member, give me a comprehensive review of their entire week: attendance, what they worked on, any concerns, follow-ups needed, and specific discussion points for the call. End with an overall team summary.`;
+        const hasData = teamData.employees.some(e => e.records.length > 0);
+        if (!hasData) {
+            loadingCard.remove();
+            addAIResponse('Friday Weekly Review Prep (4:30 PM)', 'calendar-check', 'No attendance data this week. Start tracking on the Dashboard first.');
+            return;
+        }
+        const question = `Friday weekly review for ${AppState.currentDate}. Brief review per person + team summary.`;
         const response = await askAI(question, teamData, 'friday_review');
         loadingCard.remove();
         addAIResponse('Friday Weekly Review Prep (4:30 PM)', 'calendar-check', response || 'No response');
@@ -2099,7 +2133,13 @@ async function handleTeamSummary() {
 
     try {
         const teamData = await buildTeamDataForAI(7);
-        const question = `Give me a complete team performance overview for this week (ending ${AppState.currentDate}). Include attendance rates, top performers, concerns, and recommendations.`;
+        const hasData = teamData.employees.some(e => e.records.length > 0);
+        if (!hasData) {
+            loadingCard.remove();
+            addAIResponse('Team Overview - This Week', 'users', `**${teamData.employees.length} employees** registered but no attendance data yet.\nStart tracking on the Dashboard to get team insights.`);
+            return;
+        }
+        const question = `Team performance overview for week ending ${AppState.currentDate}. Be concise.`;
         const response = await askAI(question, teamData, 'team_summary');
         loadingCard.remove();
         addAIResponse('Team Overview - This Week', 'users', response || 'No response');
@@ -2114,7 +2154,13 @@ async function handleConcerns() {
 
     try {
         const teamData = await buildTeamDataForAI(14);
-        const question = `Identify ALL team concerns and red flags from the last 2 weeks (up to ${AppState.currentDate}). Who needs immediate attention? Any suspicious patterns? Ghost promise repeat offenders? Trust score concerns?`;
+        const hasData = teamData.employees.some(e => e.records.length > 0);
+        if (!hasData) {
+            loadingCard.remove();
+            addAIResponse('Flagged Concerns', 'alert-triangle', 'No data to analyze yet. Start tracking attendance to detect concerns.');
+            return;
+        }
+        const question = `Team red flags and concerns up to ${AppState.currentDate}. Rank by severity. Be concise.`;
         const response = await askAI(question, teamData, 'concerns');
         loadingCard.remove();
         addAIResponse('Flagged Concerns', 'alert-triangle', response || 'No response');
