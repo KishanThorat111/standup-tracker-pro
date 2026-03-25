@@ -10,7 +10,8 @@ module.exports = async function handler(req, res) {
         return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const { apiKey, employeeData, prompt } = req.body || {};
+    const { apiKey: clientKey, employeeData, prompt } = req.body || {};
+    const apiKey = clientKey || process.env.GEMINI_API_KEY;
 
     if (!apiKey || !employeeData) {
         return res.status(400).json({ error: 'API key and employee data are required' });
@@ -31,7 +32,7 @@ Please provide:
 
     try {
         const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(apiKey)}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`,
             {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
