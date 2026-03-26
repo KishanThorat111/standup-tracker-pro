@@ -86,6 +86,8 @@
             --absent-fake-bg: rgba(160,82,77,0.15);
             --async: #6B8E9B;
             --async-bg: rgba(107,142,155,0.12);
+            --leave: #5B8C5A;
+            --leave-bg: rgba(91,140,90,0.12);
             --primary-btn: #E07A5F;
             --primary-hover: #C96A52;
         }
@@ -147,6 +149,7 @@
         .status-absent { background: rgba(154,149,144,0.12); color: var(--absent); border: 1px solid var(--absent); }
         .status-fake { background: var(--absent-fake-bg); color: var(--absent-fake); border: 1px solid var(--absent-fake); }
         .status-async { background: var(--async-bg); color: var(--dusty); border: 1px solid var(--dusty); }
+        .status-leave { background: var(--leave-bg); color: var(--leave); border: 1px solid var(--leave); }
         
         .input-field {
             background: var(--bg-card);
@@ -232,6 +235,8 @@
         
         .bg-informed-bg { background: rgba(139,139,174,0.10); }
         .border-informed { border-color: #8B8BAE; }
+        .bg-leave-bg { background: var(--leave-bg); }
+        .border-leave { border-color: var(--leave); }
         
         @media (max-width: 640px) {
             .card { border-radius: 8px; }
@@ -419,6 +424,7 @@
                     <option value="">Quick Mark...</option>
                     <option value="present_active">Mark All Present</option>
                     <option value="present_async">Mark All Async</option>
+                    <option value="on_leave">Mark All On Leave</option>
                     <option value="clear">Clear All</option>
                 </select>
                 
@@ -509,6 +515,7 @@
                             <option value="present_async">Present Async</option>
                             <option value="present_late">Present Late</option>
                             <option value="informed_valid">Informed Valid</option>
+                            <option value="on_leave">On Leave</option>
                             <option value="absent_no_internet">No Internet</option>
                             <option value="absent_no_response">No Response</option>
                             <option value="remote_chat_only">Chat Only</option>
@@ -550,6 +557,7 @@
                         <option value="present_async">Present Async</option>
                         <option value="present_late">Present Late</option>
                         <option value="informed_valid">Informed Valid</option>
+                        <option value="on_leave">On Leave</option>
                         <option value="absent_no_internet">No Internet</option>
                         <option value="absent_no_response">No Response</option>
                         <option value="remote_chat_only">Chat Only</option>
@@ -606,6 +614,7 @@
                 <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-dusty"></span> AA - Async</span>
                 <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-terracotta"></span> AG - Ghost</span>
                 <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-amber"></span> PL - Late</span>
+                <span class="flex items-center gap-1"><span class="w-3 h-3 rounded" style="background:#5B8C5A"></span> OL - On Leave</span>
                 <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-taupe"></span> NI - No Internet</span>
                 <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-rust"></span> FE - Fake</span>
             </div>

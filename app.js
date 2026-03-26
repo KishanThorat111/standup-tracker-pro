@@ -13,6 +13,7 @@ const STATUS_CONFIG = {
     present_ghost: { label: 'Ghost Promise', abbr: 'AG', color: 'status-ghost' },
     present_late: { label: 'Present Late', abbr: 'PL', color: 'status-late' },
     informed_valid: { label: 'Informed Valid', abbr: 'IV', color: 'status-informed' },
+    on_leave: { label: 'On Leave', abbr: 'OL', color: 'status-leave' },
     absent_no_internet: { label: 'No Internet', abbr: 'NI', color: 'status-absent' },
     absent_no_response: { label: 'No Response', abbr: 'NR', color: 'status-absent' },
     absent_fake_excuse: { label: 'Fake Excuse', abbr: 'FE', color: 'status-fake' },
@@ -23,7 +24,7 @@ const STATUS_CONFIG = {
 const STANDUP_TIME = '09:00'; // 9 AM default standup time
 
 // Statuses that mean the person was absent for that session (no standup expected)
-const ABSENT_STATUSES = ['absent_no_internet', 'absent_no_response', 'absent_fake_excuse', 'informed_valid'];
+const ABSENT_STATUSES = ['absent_no_internet', 'absent_no_response', 'absent_fake_excuse', 'informed_valid', 'on_leave'];
 
 function isAbsentStatus(status) {
     return ABSENT_STATUSES.includes(status);
@@ -31,7 +32,7 @@ function isAbsentStatus(status) {
 
 // Check if a morning absent status means full-day absent (evening not expected)
 function isFullDayAbsentStatus(status) {
-    return ['absent_no_internet', 'absent_no_response', 'absent_fake_excuse'].includes(status);
+    return ['absent_no_internet', 'absent_no_response', 'absent_fake_excuse', 'on_leave'].includes(status);
 }
 
 // ============================================
@@ -870,18 +871,31 @@ function createEmployeeCard(employee, record) {
     
     // Absent day banner (hidden by default, shown when morning is absent)
     const absentBanner = document.createElement('div');
-    absentBanner.className = 'absent-day-banner hidden bg-informed-bg border border-informed rounded-lg p-3 mx-4 mb-2 flex items-center gap-2';
-    absentBanner.innerHTML = `
-        <i data-lucide="user-x" class="w-4 h-4 text-lavender"></i>
-        <span class="text-sm text-lavender font-medium">Absent — No standup expected. Evening auto-set.</span>
-    `;
+    absentBanner.className = 'absent-day-banner hidden rounded-lg p-3 mx-4 mb-2 flex items-center gap-2';
+    function updateAbsentBanner(status) {
+        if (status === 'on_leave') {
+            absentBanner.className = 'absent-day-banner hidden bg-leave-bg border border-leave rounded-lg p-3 mx-4 mb-2 flex items-center gap-2';
+            absentBanner.innerHTML = `
+                <i data-lucide="palm-tree" class="w-4 h-4" style="color:var(--leave)"></i>
+                <span class="text-sm font-medium" style="color:var(--leave)">On Leave — No standup expected. Evening auto-set.</span>
+            `;
+        } else {
+            absentBanner.className = 'absent-day-banner hidden bg-informed-bg border border-informed rounded-lg p-3 mx-4 mb-2 flex items-center gap-2';
+            absentBanner.innerHTML = `
+                <i data-lucide="user-x" class="w-4 h-4 text-lavender"></i>
+                <span class="text-sm text-lavender font-medium">Absent — No standup expected. Evening auto-set.</span>
+            `;
+        }
+        absentBanner.classList.remove('hidden');
+        lucide.createIcons();
+    }
     // Insert banner before the evening section
     const eveningSection = cardEl.querySelector('.p-4:last-of-type');
     if (eveningSection) cardEl.insertBefore(absentBanner, eveningSection);
     
     // Show banner if already absent
     if (record?.morning?.status && isFullDayAbsentStatus(record.morning.status)) {
-        absentBanner.classList.remove('hidden');
+        updateAbsentBanner(record.morning.status);
         eveningStatus.disabled = true;
         eveningNotes.disabled = true;
     }
@@ -911,7 +925,7 @@ function createEmployeeCard(employee, record) {
         
         // Handle full-day absent: auto-set evening to same absent status and lock it
         if (isFullDayAbsentStatus(status)) {
-            absentBanner.classList.remove('hidden');
+            updateAbsentBanner(status);
             eveningStatus.value = status;
             eveningStatus.disabled = true;
             eveningNotes.disabled = true;
@@ -1113,6 +1127,10 @@ async function handleQuickMark(e) {
             if (!employee.is_active) continue;
             if (employee.standup_exempt) continue;
             await saveAttendance(employee.id, 'morning', { status: value });
+            // For full-day absent statuses, auto-set evening too
+            if (isFullDayAbsentStatus(value)) {
+                await saveAttendance(employee.id, 'evening', { status: value });
+            }
         }
         showToast(`All employees marked as ${STATUS_CONFIG[value]?.label || value}`, 'success');
     }
@@ -1341,7 +1359,8 @@ async function renderMatrixTable() {
                     'status-informed': '#8B8BAE',
                     'status-absent': '#9A9590',
                     'status-fake': '#A0524D',
-                    'status-async': '#6B8E9B'
+                    'status-async': '#6B8E9B',
+                    'status-leave': '#5B8C5A'
                 };
                 const mBg = mConfig ? (matrixColors[mConfig.color] || '#F7F5F0') : '#F7F5F0';
                 const eBg = eConfig ? (matrixColors[eConfig.color] || '#F7F5F0') : '#F7F5F0';
@@ -1738,7 +1757,7 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
     const uniqueDates = [...new Set(standupRecords.map(r => r.date))].sort();
     const totalDays = uniqueDates.length;
     let morningPresent = 0, eveningSubmitted = 0, ghostCount = 0, fakeCount = 0, lateCount = 0;
-    let absentFullDay = 0, noInternetCount = 0, noResponseCount = 0, informedValidCount = 0;
+    let absentFullDay = 0, noInternetCount = 0, noResponseCount = 0, informedValidCount = 0, onLeaveCount = 0;
     
     for (const r of standupRecords) {
         const ms = r.morning?.status || '';
@@ -1749,6 +1768,7 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
         if (ms === 'absent_no_internet') noInternetCount++;
         if (ms === 'absent_no_response') noResponseCount++;
         if (ms === 'informed_valid') informedValidCount++;
+        if (ms === 'on_leave') onLeaveCount++;
         if (isFullDayAbsentStatus(ms)) absentFullDay++;
         
         // Evening: only count evening updates for people who were actually present
@@ -1773,7 +1793,8 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
         ['Late Arrivals', `${lateCount}`],
         ['No Internet Claims', `${noInternetCount}`],
         ['No Response (Uncontacted)', `${noResponseCount}`],
-        ['Informed Valid Leaves', `${informedValidCount}`]
+        ['Informed Valid Leaves', `${informedValidCount}`],
+        ['On Leave (Approved)', `${onLeaveCount}`]
     ];
     
     doc.autoTable({
@@ -2025,6 +2046,7 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
             const lates = empRecords.filter(r => r.morning?.status === 'present_late').length;
             const noResponses = empRecords.filter(r => r.morning?.status === 'absent_no_response').length;
             const noInternet = empRecords.filter(r => r.morning?.status === 'absent_no_internet' || r.evening?.status === 'absent_no_internet').length;
+            const onLeave = empRecords.filter(r => r.morning?.status === 'on_leave').length;
             const unverified = empRecords.filter(r => 
                 (r.morning?.status?.startsWith('absent_') && r.morning?.verification_status === 'unverified') ||
                 (r.evening?.status?.startsWith('absent_') && r.evening?.verification_status === 'unverified')
@@ -2056,6 +2078,7 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
                 ['Late Arrivals', `${lates}`],
                 ['No Response', `${noResponses}`],
                 ['No Internet Claims', `${noInternet}`],
+                ['On Leave (Approved)', `${onLeave}`],
                 ['Verifications — Legit', `${verifiedLegit}`],
                 ['Verifications — Fake', `${verifiedFake}`],
                 ['Verifications — Pending', `${unverified}`]
