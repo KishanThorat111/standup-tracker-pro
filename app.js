@@ -22,6 +22,18 @@ const STATUS_CONFIG = {
 
 const STANDUP_TIME = '09:00'; // 9 AM default standup time
 
+// Statuses that mean the person was absent for that session (no standup expected)
+const ABSENT_STATUSES = ['absent_no_internet', 'absent_no_response', 'absent_fake_excuse', 'informed_valid'];
+
+function isAbsentStatus(status) {
+    return ABSENT_STATUSES.includes(status);
+}
+
+// Check if a morning absent status means full-day absent (evening not expected)
+function isFullDayAbsentStatus(status) {
+    return ['absent_no_internet', 'absent_no_response', 'absent_fake_excuse'].includes(status);
+}
+
 // ============================================
 // AUTH & API CLIENT
 // ============================================
@@ -376,7 +388,6 @@ function isGhostPromise(record, session) {
     if (!data) return false;
     
     const isPromise = data.status === 'present_async' || 
-                      data.status === 'informed_valid' ||
                       (data.notes?.toLowerCase().includes('will update')) ||
                       (data.notes?.toLowerCase().includes('later')) ||
                       (data.notes?.toLowerCase().includes('update soon'));
@@ -477,6 +488,10 @@ const AppState = {
 // ============================================
 
 async function calculateTrustScore(employeeId) {
+    // Exempt employees always have perfect trust — they don't participate in standups
+    const emp = await db.employees.get(employeeId);
+    if (emp?.standup_exempt) return 100;
+
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
     const cutoffDate = formatDate(thirtyDaysAgo);
@@ -492,7 +507,13 @@ async function calculateTrustScore(employeeId) {
     let score = 100;
     
     records.forEach(record => {
+        // If morning is full-day absent, only penalize morning session — evening was auto-set
+        const morningIsFullDayAbsent = isFullDayAbsentStatus(record.morning?.status);
+        
         ['morning', 'evening'].forEach(session => {
+            // Skip evening penalty if morning was full-day absent (evening is just a mirror)
+            if (session === 'evening' && morningIsFullDayAbsent) return;
+            
             const status = record[session]?.status;
             const verification = record[session]?.verification_status;
             
@@ -536,9 +557,15 @@ async function detectAndConvertGhosts(date) {
         const morning = record.morning;
         const evening = record.evening;
         
+        // Skip exempt employees — they don't participate in standups
+        const emp = await db.employees.get(record.employee_id);
+        if (emp?.standup_exempt) continue;
+        
+        // Skip anyone who was absent — they are not expected to give evening updates
+        if (isAbsentStatus(morning?.status)) continue;
+        
         // Check if morning was a promise to update later
         const isPromise = morning?.status === 'present_async' || 
-                          morning?.status === 'informed_valid' ||
                           (morning?.notes?.toLowerCase().includes('will update')) ||
                           (morning?.notes?.toLowerCase().includes('later')) ||
                           (morning?.notes?.toLowerCase().includes('update soon'));
@@ -758,14 +785,20 @@ async function renderEmployeeList() {
         return;
     }
     
+    const standupEmployees = AppState.employees.filter(e => e.is_active && !e.standup_exempt);
+    
+    if (!standupEmployees.length) {
+        list.innerHTML = '';
+        emptyState.classList.remove('hidden');
+        return;
+    }
+    
     emptyState.classList.add('hidden');
     list.innerHTML = '';
     
     const records = await AppState.loadAttendanceForDate(AppState.currentDate);
     
-    for (const employee of AppState.employees) {
-        if (!employee.is_active) continue;
-        
+    for (const employee of standupEmployees) {
         const record = records[employee.id] || null;
         const card = createEmployeeCard(employee, record);
         list.appendChild(card);
@@ -835,6 +868,24 @@ function createEmployeeCard(employee, record) {
         applyStatusColor(morningStatus, record.morning.status);
     }
     
+    // Absent day banner (hidden by default, shown when morning is absent)
+    const absentBanner = document.createElement('div');
+    absentBanner.className = 'absent-day-banner hidden bg-informed-bg border border-informed rounded-lg p-3 mx-4 mb-2 flex items-center gap-2';
+    absentBanner.innerHTML = `
+        <i data-lucide="user-x" class="w-4 h-4 text-lavender"></i>
+        <span class="text-sm text-lavender font-medium">Absent — No standup expected. Evening auto-set.</span>
+    `;
+    // Insert banner before the evening section
+    const eveningSection = cardEl.querySelector('.p-4:last-of-type');
+    if (eveningSection) cardEl.insertBefore(absentBanner, eveningSection);
+    
+    // Show banner if already absent
+    if (record?.morning?.status && isFullDayAbsentStatus(record.morning.status)) {
+        absentBanner.classList.remove('hidden');
+        eveningStatus.disabled = true;
+        eveningNotes.disabled = true;
+    }
+    
     // Morning status change
     morningStatus.addEventListener('change', async (e) => {
         const status = e.target.value;
@@ -857,9 +908,32 @@ function createEmployeeCard(employee, record) {
         
         await saveAttendance(employee.id, 'morning', updates);
         applyStatusColor(morningStatus, status);
-        // Enable evening fields now that morning has a status
-        eveningStatus.disabled = false;
-        eveningNotes.disabled = false;
+        
+        // Handle full-day absent: auto-set evening to same absent status and lock it
+        if (isFullDayAbsentStatus(status)) {
+            absentBanner.classList.remove('hidden');
+            eveningStatus.value = status;
+            eveningStatus.disabled = true;
+            eveningNotes.disabled = true;
+            applyStatusColor(eveningStatus, status);
+            await saveAttendance(employee.id, 'evening', { 
+                status: status, 
+                notes: record?.morning?.notes || '' 
+            });
+        } else {
+            absentBanner.classList.add('hidden');
+            // Enable evening fields now that morning has a status
+            eveningStatus.disabled = false;
+            eveningNotes.disabled = false;
+            // If evening was auto-set to absent but morning changed to present, clear evening
+            if (isFullDayAbsentStatus(eveningStatus.value)) {
+                eveningStatus.value = '';
+                eveningNotes.value = '';
+                await saveAttendance(employee.id, 'evening', { status: '', notes: '' });
+                applyStatusColor(eveningStatus, '');
+            }
+        }
+        
         updateInsights();
     });
     
@@ -888,10 +962,11 @@ function createEmployeeCard(employee, record) {
     const eveningAsync = card.querySelector('.evening-async');
     const eveningLag = card.querySelector('.evening-lag');
     
-    // Enable evening only if morning has status
+    // Enable evening only if morning has a non-absent status
     const hasMorning = record?.morning?.status;
-    eveningStatus.disabled = !hasMorning;
-    eveningNotes.disabled = !hasMorning;
+    const morningIsAbsent = isFullDayAbsentStatus(record?.morning?.status);
+    eveningStatus.disabled = !hasMorning || morningIsAbsent;
+    eveningNotes.disabled = !hasMorning || morningIsAbsent;
     
     if (record?.evening) {
         eveningStatus.value = record.evening.status || '';
@@ -1036,6 +1111,7 @@ async function handleQuickMark(e) {
     } else {
         for (const employee of AppState.employees) {
             if (!employee.is_active) continue;
+            if (employee.standup_exempt) continue;
             await saveAttendance(employee.id, 'morning', { status: value });
         }
         showToast(`All employees marked as ${STATUS_CONFIG[value]?.label || value}`, 'success');
@@ -1073,6 +1149,8 @@ async function copyYesterday() {
     let copied = 0;
     for (const [employeeId, record] of Object.entries(prevRecords)) {
         const empId = Number(employeeId) || employeeId;
+        const emp = AppState.employees.find(e => e.id === empId);
+        if (emp?.standup_exempt) continue;
         const existing = await db.attendance_records.get([empId, AppState.currentDate]);
         
         if (!existing) {
@@ -1112,29 +1190,35 @@ async function updateInsights() {
     const ghosts = await AppState.getGhostPromises(AppState.currentDate);
     const pendingVerifications = await AppState.getPendingVerifications();
     
-    // Calculate attendance rate
+    // Calculate attendance rate based on active employees who are not standup exempt
+    const activeEmployees = AppState.employees.filter(e => e.is_active && !e.standup_exempt);
+    const totalExpected = activeEmployees.length; // Total who should have attended today
     let presentCount = 0;
-    let totalCount = 0;
+    let absentCount = 0;
+    let noRecordCount = 0;
     
-    Object.values(records).forEach(r => {
-        if (r.morning?.status) {
-            totalCount++;
-            if (['present_active', 'present_async', 'present_late'].includes(r.morning.status)) {
-                presentCount++;
-            }
+    // Count from active employees, not just existing records
+    for (const emp of activeEmployees) {
+        const r = records[emp.id];
+        if (!r || !r.morning?.status) {
+            noRecordCount++; // Not yet marked
+        } else if (['present_active', 'present_async', 'present_late', 'remote_chat_only', 'remote_async_deferred'].includes(r.morning.status)) {
+            presentCount++;
+        } else {
+            absentCount++; // absent_*, informed_valid, present_ghost
         }
-    });
+    }
     
-    const attendanceRate = totalCount > 0 ? Math.round((presentCount / totalCount) * 100) : 0;
+    const attendanceRate = totalExpected > 0 ? Math.round((presentCount / totalExpected) * 100) : 0;
     
     // Calculate team trust average
-    const activeEmployees = AppState.employees.filter(e => e.is_active);
     const avgTrust = activeEmployees.length > 0 
         ? Math.round(activeEmployees.reduce((sum, e) => sum + (e.trust_score || 100), 0) / activeEmployees.length)
         : 100;
     
     // Update UI
     document.getElementById('insightAttendance').textContent = `${attendanceRate}%`;
+    document.getElementById('insightAttendance').title = `${presentCount} present, ${absentCount} absent, ${noRecordCount} unmarked out of ${totalExpected}`;
     document.getElementById('insightGhosts').textContent = ghosts.length;
     document.getElementById('insightUnverified').textContent = pendingVerifications.length;
     document.getElementById('insightTrust').textContent = avgTrust;
@@ -1213,6 +1297,7 @@ async function renderMatrixTable() {
     
     for (const employee of AppState.employees) {
         if (!employee.is_active) continue;
+        if (employee.standup_exempt) continue;
         
         const tr = document.createElement('tr');
         tr.className = 'hover:bg-cream/50';
@@ -1305,6 +1390,7 @@ async function exportMatrix() {
     
     for (const employee of AppState.employees) {
         if (!employee.is_active) continue;
+        if (employee.standup_exempt) continue;
         
         csv += `"${employee.full_name}",`;
         
@@ -1444,7 +1530,7 @@ async function renderTeamList() {
                 ${escapeHtml(getInitials(employee.full_name))}
             </div>
             <div class="flex-1 min-w-0">
-                <h3 class="font-medium text-charcoal truncate">${escapeHtml(employee.full_name)} ${!employee.is_active ? '<span class="text-xs text-taupe">(Archived)</span>' : ''}</h3>
+                <h3 class="font-medium text-charcoal truncate">${escapeHtml(employee.full_name)} ${!employee.is_active ? '<span class="text-xs text-taupe">(Archived)</span>' : ''}${employee.standup_exempt ? '<span class="text-xs bg-dusty/15 text-dusty px-1.5 py-0.5 rounded ml-1">Standup Exempt</span>' : ''}</h3>
                 <p class="text-sm text-taupe">${escapeHtml(employee.role)}</p>
                 <div class="flex items-center gap-2 mt-1">
                     <span class="${scoreClass} px-2 py-0.5 rounded text-xs text-white font-medium">Trust: ${score}</span>
@@ -1569,6 +1655,13 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF();
     const employees = await db.employees.toArray();
+    const standupParticipants = employees.filter(e => e.is_active && !e.standup_exempt);
+    const exemptMembers = employees.filter(e => e.is_active && e.standup_exempt);
+    // Filter records to only standup participants for stats
+    const standupRecords = records.filter(r => {
+        const emp = employees.find(e => e.id === r.employee_id);
+        return emp && !emp.standup_exempt;
+    });
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
     
@@ -1621,9 +1714,14 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
     doc.setFontSize(13);
     doc.setTextColor(45, 55, 72);
     doc.text(AppState.settings.manager_name || 'Not set', startX + cardW / 2, infoY + 28, { align: 'center' });
-    doc.text(`${employees.length} Members`, startX + cardW + gap + cardW / 2, infoY + 28, { align: 'center' });
+    doc.text(`${employees.filter(e => e.is_active).length} Members`, startX + cardW + gap + cardW / 2, infoY + 28, { align: 'center' });
     doc.text(`${records.length}`, startX + cardW / 2, infoY + 78, { align: 'center' });
     doc.text(new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }), startX + cardW + gap + cardW / 2, infoY + 78, { align: 'center' });
+    
+    // Standup breakdown line below cards
+    doc.setFontSize(9);
+    doc.setTextColor(120);
+    doc.text(`${standupParticipants.length} standup participants  \u00B7  ${exemptMembers.length} exempt (${exemptMembers.map(e => e.full_name).join(', ') || 'none'})`, pageWidth / 2, infoY + 100, { align: 'center' });
     
     // Footer on cover
     doc.setFontSize(8);
@@ -1636,30 +1734,46 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
     doc.setTextColor(45, 55, 72);
     doc.text('Team Statistics Overview', 14, 20);
     
-    // Calculate team-level stats
-    const uniqueDates = [...new Set(records.map(r => r.date))].sort();
+    // Calculate team-level stats (only for standup participants, not exempt)
+    const uniqueDates = [...new Set(standupRecords.map(r => r.date))].sort();
     const totalDays = uniqueDates.length;
     let morningPresent = 0, eveningSubmitted = 0, ghostCount = 0, fakeCount = 0, lateCount = 0;
+    let absentFullDay = 0, noInternetCount = 0, noResponseCount = 0, informedValidCount = 0;
     
-    for (const r of records) {
+    for (const r of standupRecords) {
         const ms = r.morning?.status || '';
-        if (ms.startsWith('present')) morningPresent++;
+        if (['present_active', 'present_async', 'present_late', 'remote_chat_only', 'remote_async_deferred'].includes(ms)) morningPresent++;
         if (ms === 'present_ghost') ghostCount++;
         if (ms === 'absent_fake_excuse') fakeCount++;
         if (ms === 'present_late') lateCount++;
+        if (ms === 'absent_no_internet') noInternetCount++;
+        if (ms === 'absent_no_response') noResponseCount++;
+        if (ms === 'informed_valid') informedValidCount++;
+        if (isFullDayAbsentStatus(ms)) absentFullDay++;
+        
+        // Evening: only count evening updates for people who were actually present
         const es = r.evening?.status || '';
-        if (es && es !== 'no_response') eveningSubmitted++;
+        const mFullAbsent = isFullDayAbsentStatus(ms);
+        if (es && es !== 'absent_no_response' && !mFullAbsent) eveningSubmitted++;
     }
+    
+    // Non-absent records = people who were expected to attend standup
+    const nonAbsentRecords = standupRecords.length - absentFullDay;
     
     const statsData = [
         ['Tracking Period', `${startDate} to ${endDate}`],
         ['Working Days Tracked', `${totalDays}`],
-        ['Total Records', `${records.length}`],
-        ['Morning Present Rate', `${records.length ? Math.round(morningPresent / records.length * 100) : 0}% (${morningPresent}/${records.length})`],
-        ['Evening Update Rate', `${records.length ? Math.round(eveningSubmitted / records.length * 100) : 0}% (${eveningSubmitted}/${records.length})`],
+        ['Standup Participants', `${standupParticipants.length} (${exemptMembers.length} exempt)`],
+        ['Total Participant-Day Records', `${standupRecords.length}`],
+        ['Days Present (Standup Occurred)', `${morningPresent} out of ${standupRecords.length} (${standupRecords.length ? Math.round(morningPresent / standupRecords.length * 100) : 0}%)`],
+        ['Days Absent (Full Day)', `${absentFullDay} out of ${standupRecords.length} (${standupRecords.length ? Math.round(absentFullDay / standupRecords.length * 100) : 0}%)`],
+        ['Evening Updates (Present Days)', `${eveningSubmitted} out of ${nonAbsentRecords > 0 ? nonAbsentRecords : 0} (${nonAbsentRecords > 0 ? Math.round(eveningSubmitted / nonAbsentRecords * 100) : 0}%)`],
         ['Ghost Promises', `${ghostCount}`],
         ['Fake Excuses', `${fakeCount}`],
-        ['Late Arrivals', `${lateCount}`]
+        ['Late Arrivals', `${lateCount}`],
+        ['No Internet Claims', `${noInternetCount}`],
+        ['No Response (Uncontacted)', `${noResponseCount}`],
+        ['Informed Valid Leaves', `${informedValidCount}`]
     ];
     
     doc.autoTable({
@@ -1679,16 +1793,42 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
     
     const empSummaryData = [];
     for (const emp of employees) {
+        if (!emp.is_active) continue;
+        
+        if (emp.standup_exempt) {
+            empSummaryData.push([
+                emp.full_name,
+                emp.role || '-',
+                'Exempt',
+                '-',
+                '-',
+                '-',
+                '-'
+            ]);
+            continue;
+        }
+        
         const empRecords = records.filter(r => r.employee_id === emp.id);
-        const mPresent = empRecords.filter(r => (r.morning?.status || '').startsWith('present')).length;
-        const eSub = empRecords.filter(r => { const es = r.evening?.status || ''; return es && es !== 'no_response'; }).length;
+        const mPresent = empRecords.filter(r => {
+            const ms = r.morning?.status || '';
+            return ['present_active', 'present_async', 'present_late', 'remote_chat_only', 'remote_async_deferred'].includes(ms);
+        }).length;
+        const empAbsent = empRecords.filter(r => isFullDayAbsentStatus(r.morning?.status || '')).length;
+        const empPresentDays = empRecords.length - empAbsent;
+        const eSub = empRecords.filter(r => {
+            const ms = r.morning?.status || '';
+            if (isFullDayAbsentStatus(ms)) return false;
+            const es = r.evening?.status || '';
+            return es && es !== 'absent_no_response';
+        }).length;
         const ghosts = empRecords.filter(r => r.morning?.status === 'present_ghost').length;
         
         empSummaryData.push([
             emp.full_name,
             emp.role || '-',
-            `${empRecords.length > 0 ? Math.round(mPresent / totalDays * 100) : 0}%`,
-            `${empRecords.length > 0 ? Math.round(eSub / totalDays * 100) : 0}%`,
+            `${mPresent}/${totalDays} (${totalDays ? Math.round(mPresent / totalDays * 100) : 0}%)`,
+            `${empAbsent}d`,
+            `${eSub}/${empPresentDays > 0 ? empPresentDays : 0}`,
             `${ghosts}`,
             `${emp.trust_score || 100}`
         ]);
@@ -1696,17 +1836,18 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
     
     doc.autoTable({
         startY: 30,
-        head: [['Name', 'Role', 'Attendance', 'Eve. Updates', 'Ghosts', 'Trust']],
+        head: [['Name', 'Role', 'Attendance', 'Absent', 'Eve. Updates', 'Ghosts', 'Trust']],
         body: empSummaryData,
         styles: { fontSize: 8, cellPadding: 3 },
         headStyles: { fillColor: [45, 55, 72], textColor: 255 },
         columnStyles: {
-            0: { cellWidth: 35 },
-            1: { cellWidth: 35 },
-            2: { cellWidth: 25 },
-            3: { cellWidth: 25 },
-            4: { cellWidth: 18 },
-            5: { cellWidth: 18 }
+            0: { cellWidth: 30 },
+            1: { cellWidth: 28 },
+            2: { cellWidth: 28 },
+            3: { cellWidth: 16 },
+            4: { cellWidth: 25 },
+            5: { cellWidth: 16 },
+            6: { cellWidth: 16 }
         }
     });
     
@@ -1722,111 +1863,453 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
             const employee = employees.find(e => e.id === record.employee_id);
             const morningStatus = statusLabel(record.morning?.status);
             const eveningStatus = statusLabel(record.evening?.status);
-            const morningNotes = record.morning?.notes || '';
-            const eveningNotes = record.evening?.notes || '';
-            const combinedNotes = eveningNotes ? `Morning: ${morningNotes}\nEvening: ${eveningNotes}` : (morningNotes || '-');
+            const morningNotes = record.morning?.notes?.trim() || 'Not mentioned';
+            const eveningNotes = record.evening?.notes?.trim() || 'Not mentioned';
+            const combinedNotes = `AM: ${morningNotes}\nPM: ${eveningNotes}`;
+            
+            // Build reason/verification column
+            let reasonCol = '-';
+            const mAbsent = record.morning?.status?.startsWith('absent_');
+            const eAbsent = record.evening?.status?.startsWith('absent_');
+            const mGhost = record.morning?.status === 'present_ghost';
+            const eGhost = record.evening?.status === 'present_ghost';
+            if (mAbsent || eAbsent || mGhost || eGhost) {
+                const parts = [];
+                if (mAbsent) {
+                    const vs = record.morning?.verification_status;
+                    const tag = vs === 'verified_legit' ? 'LEGIT' : vs === 'verified_fake' ? 'FAKE' : 'PENDING';
+                    parts.push(`AM: ${morningNotes} [${tag}]`);
+                }
+                if (eAbsent) {
+                    const vs = record.evening?.verification_status;
+                    const tag = vs === 'verified_legit' ? 'LEGIT' : vs === 'verified_fake' ? 'FAKE' : 'PENDING';
+                    parts.push(`PM: ${eveningNotes} [${tag}]`);
+                }
+                if (mGhost) parts.push(`AM: Ghost promise`);
+                if (eGhost) parts.push(`PM: Ghost promise`);
+                reasonCol = parts.join('\n');
+            }
+            
             tableData.push([
                 record.date,
                 employee?.full_name || 'Unknown',
                 morningStatus,
                 eveningStatus,
-                combinedNotes
+                combinedNotes,
+                reasonCol
             ]);
         }
         
         doc.autoTable({
             startY: 30,
-            head: [['Date', 'Name', 'Morning Status', 'Evening Status', 'Notes']],
+            head: [['Date', 'Name', 'Morning', 'Evening', 'Notes', 'Absence Reason & Verification']],
             body: tableData,
-            styles: { fontSize: 7, cellPadding: 2, overflow: 'linebreak' },
-            headStyles: { fillColor: [45, 55, 72], textColor: 255 },
+            styles: { fontSize: 6.5, cellPadding: 2, overflow: 'linebreak' },
+            headStyles: { fillColor: [45, 55, 72], textColor: 255, fontSize: 7 },
             columnStyles: {
-                0: { cellWidth: 20 },
-                1: { cellWidth: 26 },
-                2: { cellWidth: 22 },
-                3: { cellWidth: 22 },
-                4: { cellWidth: 'auto' }
+                0: { cellWidth: 18 },
+                1: { cellWidth: 24 },
+                2: { cellWidth: 20 },
+                3: { cellWidth: 20 },
+                4: { cellWidth: 48 },
+                5: { cellWidth: 'auto' }
+            },
+            didParseCell: function(data) {
+                if (data.section === 'body' && data.column.index === 5) {
+                    const val = data.cell.raw || '';
+                    if (val.includes('FAKE')) data.cell.styles.textColor = [160, 82, 77];
+                    else if (val.includes('Ghost')) data.cell.styles.textColor = [193, 123, 116];
+                    else if (val.includes('PENDING')) data.cell.styles.textColor = [212, 163, 115];
+                }
             }
         });
     } else {
         // --- COMPLETE MODE: Full per-employee individual reports ---
+        
+        // Helper: build detailed session info string
+        const sessionDetail = (session, label) => {
+            if (!session || !session.status) return `${label}: No record`;
+            const lines = [];
+            lines.push(`Status: ${statusLabel(session.status)}`);
+            
+            // Timestamp
+            if (session.timestamp) {
+                lines.push(`Time: ${new Date(session.timestamp).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, day: '2-digit', month: 'short' })}`);
+            }
+            
+            // Response lag
+            if (session.response_lag_minutes > 0) {
+                const lagH = Math.floor(session.response_lag_minutes / 60);
+                const lagM = session.response_lag_minutes % 60;
+                lines.push(`Response Lag: ${lagH > 0 ? lagH + 'h ' : ''}${lagM}m after standup`);
+            }
+            
+            // Reason / Notes
+            const reason = session.notes?.trim();
+            lines.push(`Reason/Notes: ${reason || 'Not mentioned'}`);
+            
+            // Async proof content
+            if (session.async_content?.trim()) {
+                lines.push(`Async Update: ${session.async_content.trim()}`);
+            }
+            if (session.proof_source && session.proof_source !== 'none') {
+                const sourceLabels = { slack_thread: 'Slack Thread', teams_chat: 'Teams Chat', email: 'Email', ticket_update: 'Ticket Update' };
+                lines.push(`Proof Source: ${sourceLabels[session.proof_source] || session.proof_source}`);
+            }
+            
+            // Verification details for absence claims
+            const vs = session.verification_status;
+            if (session.status?.startsWith('absent_') || vs === 'verified_legit' || vs === 'verified_fake') {
+                const verifyLabels = { unverified: 'Unverified (Pending)', verified_legit: 'Verified - Legitimate', verified_fake: 'Verified - FAKE' };
+                lines.push(`Verification: ${verifyLabels[vs] || vs || 'Unverified (Pending)'}`);
+                if (session.verification_notes?.trim()) {
+                    lines.push(`Verification Notes: ${session.verification_notes.trim()}`);
+                }
+                if (session.verified_by) {
+                    lines.push(`Verified By: ${session.verified_by}${session.verified_at ? ' on ' + new Date(session.verified_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}`);
+                }
+            }
+            
+            // Ghost promise details
+            if (session.status === 'present_ghost' && session.ghost_promise) {
+                const gp = session.ghost_promise;
+                lines.push(`Ghost Promise: Made at ${gp.made_at ? new Date(gp.made_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }) : 'Unknown'}, Lag: ${gp.lag_hours || 0}h, Fulfilled: ${gp.fulfilled ? 'Yes' : 'No'}`);
+            }
+            
+            return lines.join('\n');
+        };
+        
         for (const emp of employees) {
+            if (!emp.is_active) continue;
+            
             const empRecords = records.filter(r => r.employee_id === emp.id).sort((a, b) => a.date.localeCompare(b.date));
             
             doc.addPage();
             
-            // Employee header
-            doc.setFontSize(16);
-            doc.setTextColor(45, 55, 72);
-            doc.text(`${emp.full_name}`, 14, 20);
-            doc.setFontSize(10);
-            doc.setTextColor(100);
-            doc.text(`Role: ${emp.role || '-'}  |  Team: ${emp.team || '-'}  |  Trust Score: ${emp.trust_score || 100}`, 14, 28);
-            if (emp.email) doc.text(`Email: ${emp.email}`, 14, 34);
+            // Employee header band
+            doc.setFillColor(45, 55, 72);
+            doc.rect(0, 0, pageWidth, 40, 'F');
+            doc.setFillColor(107, 142, 155);
+            doc.rect(0, 40, pageWidth, 2, 'F');
             
-            // Individual stats
-            const mPresent = empRecords.filter(r => (r.morning?.status || '').startsWith('present')).length;
-            const eSub = empRecords.filter(r => { const es = r.evening?.status || ''; return es && es !== 'no_response'; }).length;
+            doc.setFontSize(18);
+            doc.setTextColor(255, 255, 255);
+            doc.text(emp.full_name, 14, 18);
+            doc.setFontSize(10);
+            doc.setTextColor(200, 210, 220);
+            const headerInfo = `${emp.role || '-'}  |  Team: ${emp.team || '-'}${emp.standup_exempt ? '  |  STANDUP EXEMPT' : `  |  Trust Score: ${emp.trust_score || 100}`}`;
+            doc.text(headerInfo, 14, 28);
+            if (emp.email || emp.slack_handle) {
+                const contactParts = [];
+                if (emp.email) contactParts.push(`Email: ${emp.email}`);
+                if (emp.slack_handle) contactParts.push(`Slack: ${emp.slack_handle}`);
+                doc.setTextColor(180, 190, 200);
+                doc.text(contactParts.join('  |  '), 14, 36);
+            }
+            
+            // If exempt, show a brief note and skip standup details
+            if (emp.standup_exempt) {
+                doc.setFontSize(11);
+                doc.setTextColor(120);
+                doc.text('This team member is exempt from daily standup updates.', 14, 55);
+                doc.text('No attendance or standup records are tracked for this person.', 14, 65);
+                continue;
+            }
+            
+            // Individual stats — expanded
+            const PARTICIPATED = ['present_active', 'present_async', 'present_late', 'remote_chat_only', 'remote_async_deferred'];
+            const mPresent = empRecords.filter(r => PARTICIPATED.includes(r.morning?.status)).length;
+            const eSub = empRecords.filter(r => PARTICIPATED.includes(r.evening?.status)).length;
             const ghosts = empRecords.filter(r => r.morning?.status === 'present_ghost').length;
-            const fakes = empRecords.filter(r => r.morning?.status === 'absent_fake_excuse').length;
+            const fakes = empRecords.filter(r => r.morning?.status === 'absent_fake_excuse' || r.evening?.status === 'absent_fake_excuse').length;
             const lates = empRecords.filter(r => r.morning?.status === 'present_late').length;
+            const noResponses = empRecords.filter(r => r.morning?.status === 'absent_no_response').length;
+            const noInternet = empRecords.filter(r => r.morning?.status === 'absent_no_internet' || r.evening?.status === 'absent_no_internet').length;
+            const unverified = empRecords.filter(r => 
+                (r.morning?.status?.startsWith('absent_') && r.morning?.verification_status === 'unverified') ||
+                (r.evening?.status?.startsWith('absent_') && r.evening?.verification_status === 'unverified')
+            ).length;
+            const verifiedLegit = empRecords.filter(r =>
+                r.morning?.verification_status === 'verified_legit' || r.evening?.verification_status === 'verified_legit'
+            ).length;
+            const verifiedFake = empRecords.filter(r =>
+                r.morning?.verification_status === 'verified_fake' || r.evening?.verification_status === 'verified_fake'
+            ).length;
+            
+            // Compute average lag
+            let totalLag = 0, lagEntries = 0;
+            empRecords.forEach(r => {
+                ['morning', 'evening'].forEach(s => {
+                    const lag = r[s]?.response_lag_minutes;
+                    if (lag > 0 && lag <= 480) { totalLag += lag; lagEntries++; }
+                });
+            });
+            const avgLag = lagEntries > 0 ? Math.round(totalLag / lagEntries) : 0;
             
             const empStatsData = [
                 ['Days Tracked', `${totalDays}`],
                 ['Morning Present', `${mPresent}/${totalDays} (${totalDays ? Math.round(mPresent / totalDays * 100) : 0}%)`],
                 ['Evening Updates', `${eSub}/${totalDays} (${totalDays ? Math.round(eSub / totalDays * 100) : 0}%)`],
+                ['Avg Response Lag', avgLag > 0 ? `${Math.floor(avgLag / 60) > 0 ? Math.floor(avgLag / 60) + 'h ' : ''}${avgLag % 60}m` : 'On time'],
                 ['Ghost Promises', `${ghosts}`],
                 ['Fake Excuses', `${fakes}`],
-                ['Late Arrivals', `${lates}`]
+                ['Late Arrivals', `${lates}`],
+                ['No Response', `${noResponses}`],
+                ['No Internet Claims', `${noInternet}`],
+                ['Verifications — Legit', `${verifiedLegit}`],
+                ['Verifications — Fake', `${verifiedFake}`],
+                ['Verifications — Pending', `${unverified}`]
             ];
             
-            let startY = emp.email ? 40 : 34;
             doc.autoTable({
-                startY: startY,
+                startY: 48,
                 head: [['Metric', 'Value']],
                 body: empStatsData,
-                styles: { fontSize: 9, cellPadding: 3 },
+                styles: { fontSize: 8, cellPadding: 3 },
                 headStyles: { fillColor: [107, 142, 155], textColor: 255 },
-                columnStyles: { 0: { fontStyle: 'bold', cellWidth: 50 } },
-                tableWidth: 120
+                columnStyles: { 0: { fontStyle: 'bold', cellWidth: 55 } },
+                tableWidth: 130
             });
             
-            // Daily records with FULL notes
+            // Daily records — FULL DETAIL (one row per day, expanded session info)
             if (empRecords.length > 0) {
                 const dailyData = [];
                 for (const r of empRecords) {
-                    const morningNotes = r.morning?.notes || '-';
-                    const eveningNotes = r.evening?.notes || '-';
+                    const morningDetail = sessionDetail(r.morning, 'Morning');
+                    const eveningDetail = sessionDetail(r.evening, 'Evening');
+                    
+                    // Absence reason summary column
+                    let absenceReason = '-';
+                    const mAbsent = r.morning?.status?.startsWith('absent_');
+                    const eAbsent = r.evening?.status?.startsWith('absent_');
+                    if (mAbsent || eAbsent) {
+                        const parts = [];
+                        if (mAbsent) {
+                            const reason = r.morning?.notes?.trim() || 'Not mentioned';
+                            const vs = r.morning?.verification_status;
+                            const verifyTag = vs === 'verified_legit' ? ' [LEGIT]' : vs === 'verified_fake' ? ' [FAKE]' : ' [PENDING]';
+                            parts.push(`AM: ${reason}${verifyTag}`);
+                        }
+                        if (eAbsent) {
+                            const reason = r.evening?.notes?.trim() || 'Not mentioned';
+                            const vs = r.evening?.verification_status;
+                            const verifyTag = vs === 'verified_legit' ? ' [LEGIT]' : vs === 'verified_fake' ? ' [FAKE]' : ' [PENDING]';
+                            parts.push(`PM: ${reason}${verifyTag}`);
+                        }
+                        absenceReason = parts.join('\n');
+                    }
+                    
+                    // Ghost reason
+                    if (r.morning?.status === 'present_ghost' || r.evening?.status === 'present_ghost') {
+                        const ghostParts = [];
+                        if (r.morning?.status === 'present_ghost') {
+                            const original = r.morning?.notes?.trim() || 'Not mentioned';
+                            ghostParts.push(`AM Ghost: Promised "${original}" but never delivered`);
+                        }
+                        if (r.evening?.status === 'present_ghost') {
+                            const original = r.evening?.notes?.trim() || 'Not mentioned';
+                            ghostParts.push(`PM Ghost: Promised "${original}" but never delivered`);
+                        }
+                        absenceReason = absenceReason === '-' ? ghostParts.join('\n') : absenceReason + '\n' + ghostParts.join('\n');
+                    }
                     
                     dailyData.push([
                         r.date,
-                        statusLabel(r.morning?.status),
-                        morningNotes,
-                        statusLabel(r.evening?.status),
-                        eveningNotes
+                        morningDetail,
+                        eveningDetail,
+                        absenceReason
                     ]);
                 }
                 
                 doc.autoTable({
-                    startY: doc.lastAutoTable.finalY + 10,
-                    head: [['Date', 'Morning Status', 'Morning Notes', 'Evening Status', 'Evening Notes']],
+                    startY: doc.lastAutoTable.finalY + 8,
+                    head: [['Date', 'Morning Session', 'Evening Session', 'Absence Reason & Verification']],
                     body: dailyData,
-                    styles: { fontSize: 7, cellPadding: 3, overflow: 'linebreak', minCellHeight: 10 },
-                    headStyles: { fillColor: [45, 55, 72], textColor: 255 },
+                    styles: { fontSize: 6.5, cellPadding: 3, overflow: 'linebreak', minCellHeight: 14 },
+                    headStyles: { fillColor: [45, 55, 72], textColor: 255, fontSize: 7 },
                     columnStyles: {
-                        0: { cellWidth: 20 },
-                        1: { cellWidth: 22 },
-                        2: { cellWidth: 'auto' },
-                        3: { cellWidth: 22 },
-                        4: { cellWidth: 'auto' }
+                        0: { cellWidth: 18, fontStyle: 'bold' },
+                        1: { cellWidth: 55 },
+                        2: { cellWidth: 55 },
+                        3: { cellWidth: 52 }
+                    },
+                    didParseCell: function(data) {
+                        // Highlight absence/ghost/fake rows
+                        if (data.section === 'body' && data.column.index === 3) {
+                            const val = data.cell.raw || '';
+                            if (val.includes('[FAKE]')) {
+                                data.cell.styles.textColor = [160, 82, 77];
+                                data.cell.styles.fontStyle = 'bold';
+                            } else if (val.includes('Ghost')) {
+                                data.cell.styles.textColor = [193, 123, 116];
+                            } else if (val.includes('[PENDING]')) {
+                                data.cell.styles.textColor = [212, 163, 115];
+                            }
+                        }
                     }
                 });
+                
+                // --- ABSENCE & ISSUE SUMMARY for this employee ---
+                const absentRecords = empRecords.filter(r =>
+                    r.morning?.status?.startsWith('absent_') || r.evening?.status?.startsWith('absent_') ||
+                    r.morning?.status === 'present_ghost' || r.evening?.status === 'present_ghost'
+                );
+                
+                if (absentRecords.length > 0) {
+                    const issueRows = [];
+                    for (const r of absentRecords) {
+                        for (const session of ['morning', 'evening']) {
+                            const s = r[session];
+                            if (!s?.status) continue;
+                            const isAbsent = s.status.startsWith('absent_');
+                            const isGhost = s.status === 'present_ghost';
+                            if (!isAbsent && !isGhost) continue;
+                            
+                            const reason = s.notes?.trim() || 'Not mentioned';
+                            const vs = s.verification_status;
+                            const verifyLabel = vs === 'verified_legit' ? 'Legitimate' : vs === 'verified_fake' ? 'FAKE' : 'Pending';
+                            const verifiedBy = s.verified_by || '-';
+                            const verifyNotes = s.verification_notes?.trim() || 'Not mentioned';
+                            
+                            issueRows.push([
+                                r.date,
+                                session === 'morning' ? 'AM' : 'PM',
+                                statusLabel(s.status),
+                                reason,
+                                isGhost ? 'N/A' : verifyLabel,
+                                isGhost ? 'N/A' : verifiedBy,
+                                isGhost ? (s.ghost_promise ? `Lag: ${s.ghost_promise.lag_hours || 0}h` : '-') : verifyNotes
+                            ]);
+                        }
+                    }
+                    
+                    if (issueRows.length > 0) {
+                        doc.autoTable({
+                            startY: doc.lastAutoTable.finalY + 8,
+                            head: [['Date', 'Sess.', 'Issue Type', 'Reason Given', 'Verification', 'Verified By', 'Verification Notes']],
+                            body: issueRows,
+                            styles: { fontSize: 6, cellPadding: 2.5, overflow: 'linebreak', minCellHeight: 10 },
+                            headStyles: { fillColor: [160, 82, 77], textColor: 255, fontSize: 6.5 },
+                            columnStyles: {
+                                0: { cellWidth: 18 },
+                                1: { cellWidth: 10 },
+                                2: { cellWidth: 22 },
+                                3: { cellWidth: 40 },
+                                4: { cellWidth: 22 },
+                                5: { cellWidth: 22 },
+                                6: { cellWidth: 'auto' }
+                            },
+                            didParseCell: function(data) {
+                                if (data.section === 'body' && data.column.index === 4) {
+                                    const val = data.cell.raw || '';
+                                    if (val === 'FAKE') data.cell.styles.textColor = [160, 82, 77];
+                                    else if (val === 'Pending') data.cell.styles.textColor = [212, 163, 115];
+                                    else if (val === 'Legitimate') data.cell.styles.textColor = [124, 154, 107];
+                                }
+                            }
+                        });
+                    }
+                }
+                
             } else {
                 doc.setFontSize(10);
                 doc.setTextColor(150);
                 doc.text('No attendance records in this period.', 14, doc.lastAutoTable.finalY + 15);
             }
         }
+        
+        // --- TEAM ABSENCE & VERIFICATION OVERVIEW (after all employees) ---
+        doc.addPage();
+        doc.setFontSize(16);
+        doc.setTextColor(45, 55, 72);
+        doc.text('Team Absence & Verification Overview', 14, 20);
+        
+        const teamAbsenceRows = [];
+        for (const r of records) {
+            const emp = employees.find(e => e.id === r.employee_id);
+            for (const session of ['morning', 'evening']) {
+                const s = r[session];
+                if (!s?.status) continue;
+                const isAbsent = s.status.startsWith('absent_');
+                const isGhost = s.status === 'present_ghost';
+                if (!isAbsent && !isGhost) continue;
+                
+                const reason = s.notes?.trim() || 'Not mentioned';
+                const vs = s.verification_status;
+                const verifyLabel = vs === 'verified_legit' ? 'Legitimate' : vs === 'verified_fake' ? 'FAKE' : 'Pending';
+                
+                teamAbsenceRows.push([
+                    r.date,
+                    emp?.full_name || 'Unknown',
+                    session === 'morning' ? 'AM' : 'PM',
+                    statusLabel(s.status),
+                    reason,
+                    isGhost ? 'N/A' : verifyLabel,
+                    isGhost ? (s.ghost_promise ? `Lag: ${s.ghost_promise.lag_hours || 0}h` : '-') : (s.verification_notes?.trim() || 'Not mentioned')
+                ]);
+            }
+        }
+        
+        if (teamAbsenceRows.length > 0) {
+            teamAbsenceRows.sort((a, b) => a[0].localeCompare(b[0]));
+            
+            doc.autoTable({
+                startY: 28,
+                head: [['Date', 'Employee', 'Sess.', 'Issue', 'Reason Given', 'Verification', 'Notes']],
+                body: teamAbsenceRows,
+                styles: { fontSize: 6.5, cellPadding: 2.5, overflow: 'linebreak', minCellHeight: 10 },
+                headStyles: { fillColor: [160, 82, 77], textColor: 255, fontSize: 7 },
+                columnStyles: {
+                    0: { cellWidth: 18 },
+                    1: { cellWidth: 28 },
+                    2: { cellWidth: 10 },
+                    3: { cellWidth: 22 },
+                    4: { cellWidth: 38 },
+                    5: { cellWidth: 22 },
+                    6: { cellWidth: 'auto' }
+                },
+                didParseCell: function(data) {
+                    if (data.section === 'body' && data.column.index === 5) {
+                        const val = data.cell.raw || '';
+                        if (val === 'FAKE') data.cell.styles.textColor = [160, 82, 77];
+                        else if (val === 'Pending') data.cell.styles.textColor = [212, 163, 115];
+                        else if (val === 'Legitimate') data.cell.styles.textColor = [124, 154, 107];
+                    }
+                }
+            });
+        } else {
+            doc.setFontSize(10);
+            doc.setTextColor(150);
+            doc.text('No absences, ghost promises, or issues found in this period.', 14, 35);
+        }
+    }
+    
+    // --- EXEMPT TEAM MEMBERS PAGE (if any) ---
+    if (exemptMembers.length > 0) {
+        doc.addPage();
+        doc.setFontSize(16);
+        doc.setTextColor(45, 55, 72);
+        doc.text('Standup Exempt Team Members', 14, 20);
+        
+        doc.setFontSize(9);
+        doc.setTextColor(120);
+        doc.text('These team members are not required to participate in daily standups.', 14, 28);
+        
+        const exemptData = exemptMembers.map(e => [
+            e.full_name,
+            e.role || '-',
+            e.team || '-',
+            e.email || '-'
+        ]);
+        
+        doc.autoTable({
+            startY: 35,
+            head: [['Name', 'Role', 'Team', 'Email']],
+            body: exemptData,
+            styles: { fontSize: 9, cellPadding: 4 },
+            headStyles: { fillColor: [130, 130, 150], textColor: 255 },
+            columnStyles: { 0: { fontStyle: 'bold' } }
+        });
     }
     
     // Add page numbers
@@ -1892,9 +2375,14 @@ async function generateGhostAnalysis(records, startDate, endDate) {
     
     for (const record of ghostRecords) {
         const employee = await db.employees.get(record.employee_id);
-        const session = record.morning?.status === 'present_ghost' ? 'Morning' : 'Evening';
-        const lag = record.morning?.ghost_promise?.lag_hours || record.evening?.ghost_promise?.lag_hours || 0;
-        content += `${record.date},${employee?.full_name || 'Unknown'},${session},${lag}\n`;
+        if (record.morning?.status === 'present_ghost') {
+            const lag = record.morning?.ghost_promise?.lag_hours || 0;
+            content += `${record.date},${employee?.full_name || 'Unknown'},Morning,${lag}\n`;
+        }
+        if (record.evening?.status === 'present_ghost') {
+            const lag = record.evening?.ghost_promise?.lag_hours || 0;
+            content += `${record.date},${employee?.full_name || 'Unknown'},Evening,${lag}\n`;
+        }
     }
     
     downloadFile(content, `ghost-analysis-${startDate}.txt`, 'text/plain');
@@ -2069,7 +2557,7 @@ async function buildTeamDataForAI(daysBack = 7) {
             evening_update: '6:30 PM - 7:00 PM IST',
             friday_weekly_review: '4:30 PM - 6:00 PM IST (Fridays)'
         },
-        employees: employees.filter(e => e.is_active).map(emp => {
+        employees: employees.filter(e => e.is_active && !e.standup_exempt).map(emp => {
             const empRecords = allRecords
                 .filter(r => r.employee_id === emp.id)
                 .sort((a, b) => b.date.localeCompare(a.date));
@@ -2197,7 +2685,7 @@ function renderAIAssistant() {
 
     // Render employee quick-ask buttons
     const btnContainer = document.getElementById('aiEmployeeButtons');
-    AppState.employees.filter(e => e.is_active).forEach(emp => {
+    AppState.employees.filter(e => e.is_active && !e.standup_exempt).forEach(emp => {
         const btn = document.createElement('button');
         btn.className = 'ai-emp-btn flex items-center gap-1.5 px-3 py-1.5 bg-cream border border-border rounded-full text-sm text-slate hover:border-action hover:text-charcoal transition-colors';
         btn.innerHTML = `<span class="w-6 h-6 bg-slate/20 rounded-full flex items-center justify-center text-[10px] font-semibold text-slate">${escapeHtml(getInitials(emp.full_name))}</span> ${escapeHtml(emp.full_name)}`;
@@ -2662,6 +3150,7 @@ function showAddEmployeeModal() {
         const team = document.getElementById('empTeam').value.trim();
         const email = document.getElementById('empEmail').value.trim();
         const slack = document.getElementById('empSlack').value.trim();
+        const standupExempt = document.getElementById('empStandupExempt').checked;
         
         if (!name || !role) {
             showToast('Name and role are required', 'error');
@@ -2676,6 +3165,7 @@ function showAddEmployeeModal() {
             email,
             slack_handle: slack,
             is_active: true,
+            standup_exempt: standupExempt,
             trust_score: 100,
             created_at: new Date().toISOString()
         };
@@ -2711,6 +3201,7 @@ async function showEditEmployeeModal(employeeId) {
     content.getElementById('editEmpEmail').value = employee.email || '';
     content.getElementById('editEmpSlack').value = employee.slack_handle || '';
     content.getElementById('editEmpActive').value = employee.is_active ? 'true' : 'false';
+    content.getElementById('editEmpStandupExempt').checked = !!employee.standup_exempt;
 
     content.getElementById('updateEmployeeBtn').addEventListener('click', async () => {
         const name = document.getElementById('editEmpName').value.trim();
@@ -2719,6 +3210,7 @@ async function showEditEmployeeModal(employeeId) {
         const email = document.getElementById('editEmpEmail').value.trim();
         const slack = document.getElementById('editEmpSlack').value.trim();
         const isActive = document.getElementById('editEmpActive').value === 'true';
+        const standupExempt = document.getElementById('editEmpStandupExempt').checked;
 
         if (!name || !role) {
             showToast('Name and role are required', 'error');
@@ -2731,7 +3223,8 @@ async function showEditEmployeeModal(employeeId) {
             team,
             email,
             slack_handle: slack,
-            is_active: isActive
+            is_active: isActive,
+            standup_exempt: standupExempt
         });
 
         await AppState.loadEmployees();

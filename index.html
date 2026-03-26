@@ -230,6 +230,9 @@
         .sync-orange { background: var(--amber); }
         .sync-red { background: var(--terracotta); }
         
+        .bg-informed-bg { background: rgba(139,139,174,0.10); }
+        .border-informed { border-color: #8B8BAE; }
+        
         @media (max-width: 640px) {
             .card { border-radius: 8px; }
         }
@@ -779,6 +782,13 @@
                     <label class="block text-sm text-slate mb-2">Slack Handle</label>
                     <input type="text" id="empSlack" class="input-field w-full" placeholder="@johndoe">
                 </div>
+                <div class="flex items-center gap-3 p-3 bg-cream/60 rounded-lg border border-border">
+                    <input type="checkbox" id="empStandupExempt" class="w-4 h-4 accent-dusty rounded">
+                    <div>
+                        <label for="empStandupExempt" class="text-sm font-medium text-charcoal cursor-pointer">Standup Exempt</label>
+                        <p class="text-xs text-taupe">This person does not need to give daily standup updates (e.g. Owner, Manager, Advisor)</p>
+                    </div>
+                </div>
             </div>
             
             <button id="saveEmployeeBtn" class="btn-primary w-full">Add Employee</button>
@@ -821,6 +831,13 @@
                         <option value="true">Active</option>
                         <option value="false">Archived</option>
                     </select>
+                </div>
+                <div class="flex items-center gap-3 p-3 bg-cream/60 rounded-lg border border-border">
+                    <input type="checkbox" id="editEmpStandupExempt" class="w-4 h-4 accent-dusty rounded">
+                    <div>
+                        <label for="editEmpStandupExempt" class="text-sm font-medium text-charcoal cursor-pointer">Standup Exempt</label>
+                        <p class="text-xs text-taupe">This person does not need to give daily standup updates (e.g. Owner, Manager, Advisor)</p>
+                    </div>
                 </div>
             </div>
             
