@@ -1312,7 +1312,7 @@ async function renderMatrixTable() {
     
     const records = await db.attendance_records
         .where('date')
-        .between(startDate, endDate)
+        .between(startDate, endDate, true, true)
         .toArray();
     
     const byEmployee = {};
@@ -1655,7 +1655,7 @@ async function generateReport() {
     
     let records = await db.attendance_records
         .where('date')
-        .between(startDate, endDate)
+        .between(startDate, endDate, true, true)
         .toArray();
     
     // Apply filters
@@ -1763,7 +1763,30 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
     
     // Calculate team-level stats (only for standup participants, not exempt)
     const uniqueDates = [...new Set(standupRecords.map(r => r.date))].sort();
-    const totalDays = uniqueDates.length;
+    
+    // Compute actual working days in the date range (excluding weekends & holidays)
+    const holidays = await db.holidays.toArray();
+    const holidayDates = new Set(holidays.map(h => h.date));
+    let workingDays = 0;
+    const todayStr = formatDate(new Date());
+    const todayIncluded = endDate >= todayStr && startDate <= todayStr;
+    {
+        let d = new Date(startDate + 'T00:00:00');
+        const dEnd = new Date(endDate + 'T00:00:00');
+        while (d <= dEnd) {
+            const ds = formatDate(d);
+            const day = d.getDay();
+            if (day !== 0 && day !== 6 && !holidayDates.has(ds)) workingDays++;
+            d.setDate(d.getDate() + 1);
+        }
+    }
+    // For evening stats: if today is included and evening standup hasn't been completed
+    // (most people don't have evening records for today yet), don't count today in evening denominator
+    const eveningCompleteForToday = todayIncluded ? standupRecords.filter(r => r.date === todayStr && r.evening?.status && r.evening.status !== 'absent_no_response').length : 0;
+    const eveningExpectedParticipants = todayIncluded ? standupRecords.filter(r => r.date === todayStr).length : 0;
+    const todayEveningMostlyDone = eveningExpectedParticipants > 0 && eveningCompleteForToday >= eveningExpectedParticipants * 0.5;
+    const eveningWorkingDays = todayIncluded && !todayEveningMostlyDone ? workingDays - 1 : workingDays;
+    const totalDays = workingDays;
     let morningPresent = 0, eveningSubmitted = 0, ghostCount = 0, fakeCount = 0, lateCount = 0;
     let absentFullDay = 0, noInternetCount = 0, noResponseCount = 0, informedValidCount = 0, onLeaveCount = 0;
     
@@ -1779,7 +1802,7 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
         if (ms === 'on_leave') onLeaveCount++;
         if (isFullDayAbsentStatus(ms)) absentFullDay++;
         
-        // Evening: only count evening updates for people who were actually present
+        // For evening: only count evening updates for people who were actually present
         const es = r.evening?.status || '';
         const mFullAbsent = isFullDayAbsentStatus(ms);
         if (es && es !== 'absent_no_response' && !mFullAbsent) eveningSubmitted++;
@@ -1787,15 +1810,18 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
     
     // Non-absent records = people who were expected to attend standup
     const nonAbsentRecords = standupRecords.length - absentFullDay;
+    // For evening denominator: exclude today's non-absent records if evening hasn't happened yet
+    const todayNonAbsentCount = (todayIncluded && !todayEveningMostlyDone) ? standupRecords.filter(r => r.date === todayStr && !isFullDayAbsentStatus(r.morning?.status || '')).length : 0;
+    const eveningDenominator = nonAbsentRecords - todayNonAbsentCount;
     
     const statsData = [
         ['Tracking Period', `${startDate} to ${endDate}`],
-        ['Working Days Tracked', `${totalDays}`],
+        ['Working Days in Range', `${totalDays}${todayIncluded && !todayEveningMostlyDone ? ' (today in progress)' : ''}`],
         ['Standup Participants', `${standupParticipants.length} (${exemptMembers.length} exempt)`],
         ['Total Participant-Day Records', `${standupRecords.length}`],
         ['Days Present (Standup Occurred)', `${morningPresent} out of ${standupRecords.length} (${standupRecords.length ? Math.round(morningPresent / standupRecords.length * 100) : 0}%)`],
         ['Days Absent (Full Day)', `${absentFullDay} out of ${standupRecords.length} (${standupRecords.length ? Math.round(absentFullDay / standupRecords.length * 100) : 0}%)`],
-        ['Evening Updates (Present Days)', `${eveningSubmitted} out of ${nonAbsentRecords > 0 ? nonAbsentRecords : 0} (${nonAbsentRecords > 0 ? Math.round(eveningSubmitted / nonAbsentRecords * 100) : 0}%)`],
+        ['Evening Updates (Present Days)', `${eveningSubmitted} out of ${eveningDenominator > 0 ? eveningDenominator : 0} (${eveningDenominator > 0 ? Math.round(eveningSubmitted / eveningDenominator * 100) : 0}%)${todayIncluded && !todayEveningMostlyDone ? ' *excl. today' : ''}`],
         ['Ghost Promises', `${ghostCount}`],
         ['Fake Excuses', `${fakeCount}`],
         ['Late Arrivals', `${lateCount}`],
@@ -1844,6 +1870,10 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
         }).length;
         const empAbsent = empRecords.filter(r => isFullDayAbsentStatus(r.morning?.status || '')).length;
         const empPresentDays = empRecords.length - empAbsent;
+        // For evening: exclude today if evening standup hasn't happened
+        const empTodayRecord = (todayIncluded && !todayEveningMostlyDone) ? empRecords.find(r => r.date === todayStr) : null;
+        const empTodayNonAbsent = empTodayRecord && !isFullDayAbsentStatus(empTodayRecord.morning?.status || '') ? 1 : 0;
+        const empEveningDenom = empPresentDays - empTodayNonAbsent;
         const eSub = empRecords.filter(r => {
             const ms = r.morning?.status || '';
             if (isFullDayAbsentStatus(ms)) return false;
@@ -1857,7 +1887,7 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
             emp.role || '-',
             `${mPresent}/${totalDays} (${totalDays ? Math.round(mPresent / totalDays * 100) : 0}%)`,
             `${empAbsent}d`,
-            `${eSub}/${empPresentDays > 0 ? empPresentDays : 0}`,
+            `${eSub}/${empEveningDenom > 0 ? empEveningDenom : 0}`,
             `${ghosts}`,
             `${emp.trust_score || 100}`
         ]);
@@ -1891,9 +1921,10 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
         for (const record of records) {
             const employee = employees.find(e => e.id === record.employee_id);
             const morningStatus = statusLabel(record.morning?.status);
-            const eveningStatus = statusLabel(record.evening?.status);
+            const isRecordToday = record.date === todayStr;
+            const eveningStatus = (!record.evening?.status && isRecordToday) ? 'Pending' : statusLabel(record.evening?.status);
             const morningNotes = record.morning?.notes?.trim() || 'Not mentioned';
-            const eveningNotes = record.evening?.notes?.trim() || 'Not mentioned';
+            const eveningNotes = (!record.evening?.notes && isRecordToday) ? 'Evening standup pending' : (record.evening?.notes?.trim() || 'Not mentioned');
             const combinedNotes = `AM: ${morningNotes}\nPM: ${eveningNotes}`;
             
             // Build reason/verification column
@@ -1956,8 +1987,11 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
         // --- COMPLETE MODE: Full per-employee individual reports ---
         
         // Helper: build detailed session info string
-        const sessionDetail = (session, label) => {
-            if (!session || !session.status) return `${label}: No record`;
+        const sessionDetail = (session, label, dateStr) => {
+            if (!session || !session.status) {
+                if (dateStr === todayStr && label === 'Evening') return 'Pending — evening standup not yet completed';
+                return `No record`;
+            }
             const lines = [];
             lines.push(`Status: ${statusLabel(session.status)}`);
             
@@ -2076,10 +2110,15 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
             });
             const avgLag = lagEntries > 0 ? Math.round(totalLag / lagEntries) : 0;
             
+            // Evening denominator: exclude today if evening hasn't happened
+            const empTodayRec = (todayIncluded && !todayEveningMostlyDone) ? empRecords.find(r => r.date === todayStr) : null;
+            const empTodayPresent = empTodayRec && !isFullDayAbsentStatus(empTodayRec.morning?.status || '') ? 1 : 0;
+            const empEveDenom = totalDays - empTodayPresent;
+            
             const empStatsData = [
-                ['Days Tracked', `${totalDays}`],
+                ['Days Tracked', `${totalDays}${todayIncluded && !todayEveningMostlyDone ? ' (today in progress)' : ''}`],
                 ['Morning Present', `${mPresent}/${totalDays} (${totalDays ? Math.round(mPresent / totalDays * 100) : 0}%)`],
-                ['Evening Updates', `${eSub}/${totalDays} (${totalDays ? Math.round(eSub / totalDays * 100) : 0}%)`],
+                ['Evening Updates', `${eSub}/${empEveDenom > 0 ? empEveDenom : totalDays} (${(empEveDenom > 0 ? empEveDenom : totalDays) ? Math.round(eSub / (empEveDenom > 0 ? empEveDenom : totalDays) * 100) : 0}%)${todayIncluded && !todayEveningMostlyDone ? ' *excl. today' : ''}`],
                 ['Avg Response Lag', avgLag > 0 ? `${Math.floor(avgLag / 60) > 0 ? Math.floor(avgLag / 60) + 'h ' : ''}${avgLag % 60}m` : 'On time'],
                 ['Ghost Promises', `${ghosts}`],
                 ['Fake Excuses', `${fakes}`],
@@ -2106,8 +2145,8 @@ async function generatePDF(records, startDate, endDate, detailLevel = 'summary')
             if (empRecords.length > 0) {
                 const dailyData = [];
                 for (const r of empRecords) {
-                    const morningDetail = sessionDetail(r.morning, 'Morning');
-                    const eveningDetail = sessionDetail(r.evening, 'Evening');
+                    const morningDetail = sessionDetail(r.morning, 'Morning', r.date);
+                    const eveningDetail = sessionDetail(r.evening, 'Evening', r.date);
                     
                     // Absence reason summary column
                     let absenceReason = '-';
