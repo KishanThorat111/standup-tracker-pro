@@ -788,10 +788,6 @@ async function renderEmployeeList() {
     
     const standupEmployees = AppState.employees.filter(e => e.is_active && !e.standup_exempt);
     
-    console.log(`[Dashboard] Total employees: ${AppState.employees.length}, Active non-exempt: ${standupEmployees.length}`,
-        AppState.employees.map(e => ({ name: e.full_name, active: e.is_active, exempt: e.standup_exempt }))
-    );
-    
     if (!standupEmployees.length) {
         list.innerHTML = '';
         emptyState.classList.remove('hidden');
@@ -805,8 +801,12 @@ async function renderEmployeeList() {
     
     for (const employee of standupEmployees) {
         const record = records[employee.id] || null;
-        const card = createEmployeeCard(employee, record);
-        list.appendChild(card);
+        try {
+            const card = createEmployeeCard(employee, record);
+            list.appendChild(card);
+        } catch (err) {
+            console.error(`Error rendering card for ${employee.full_name}:`, err);
+        }
     }
     
     lucide.createIcons();
@@ -900,8 +900,6 @@ function createEmployeeCard(employee, record) {
     // Show banner if already absent
     if (record?.morning?.status && isFullDayAbsentStatus(record.morning.status)) {
         updateAbsentBanner(record.morning.status);
-        eveningStatus.disabled = true;
-        eveningNotes.disabled = true;
     }
     
     // Morning status change
