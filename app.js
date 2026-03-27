@@ -788,6 +788,10 @@ async function renderEmployeeList() {
     
     const standupEmployees = AppState.employees.filter(e => e.is_active && !e.standup_exempt);
     
+    console.log(`[Dashboard] Total employees: ${AppState.employees.length}, Active non-exempt: ${standupEmployees.length}`,
+        AppState.employees.map(e => ({ name: e.full_name, active: e.is_active, exempt: e.standup_exempt }))
+    );
+    
     if (!standupEmployees.length) {
         list.innerHTML = '';
         emptyState.classList.remove('hidden');
