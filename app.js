@@ -85,6 +85,12 @@ async function apiCall(path, options = {}) {
         throw new Error('Session expired. Please login again.');
     }
 
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+        const text = await response.text();
+        throw new Error(text.slice(0, 200) || 'Server returned non-JSON response');
+    }
+
     const data = await response.json();
 
     if (!response.ok) {
@@ -2574,6 +2580,16 @@ async function buildTeamDataForAI(daysBack = 7) {
         .filter(r => r.date >= cutoffStr)
         .toArray();
 
+    // Trim notes to avoid exceeding API payload limits
+    // For larger windows (7+ days), cap notes length per entry
+    const maxNoteLen = daysBack >= 7 ? 300 : 500;
+    function trimNote(note) {
+        if (!note) return '';
+        const trimmed = note.trim();
+        if (trimmed.length <= maxNoteLen) return trimmed;
+        return trimmed.slice(0, maxNoteLen) + '...';
+    }
+
     return {
         today: AppState.currentDate,
         manager: AppState.settings.manager_name || 'Manager',
@@ -2595,10 +2611,10 @@ async function buildTeamDataForAI(daysBack = 7) {
                 records: empRecords.map(r => {
                     const rec = { d: r.date };
                     if (r.morning?.status) rec.ms = STATUS_CONFIG[r.morning.status]?.label || r.morning.status;
-                    if (r.morning?.notes) rec.mn = r.morning.notes;
+                    if (r.morning?.notes) rec.mn = trimNote(r.morning.notes);
                     if (r.morning?.response_lag_minutes) rec.lag = r.morning.response_lag_minutes;
                     if (r.evening?.status) rec.es = STATUS_CONFIG[r.evening.status]?.label || r.evening.status;
-                    if (r.evening?.notes) rec.en = r.evening.notes;
+                    if (r.evening?.notes) rec.en = trimNote(r.evening.notes);
                     if (r.morning?.status === 'present_ghost') rec.ghost = true;
                     if (r.morning?.status === 'absent_fake_excuse') rec.fake = true;
                     return rec;

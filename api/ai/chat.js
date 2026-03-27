@@ -156,10 +156,26 @@ RULES: Rank ALL employees. Use actual data. Evaluate note quality and work deliv
 
     const systemPrompt = systemPrompts[mode] || systemPrompts.chat;
 
-    const userPrompt = `${question}
+    // Serialize team data and cap total prompt size to stay within limits
+    let teamDataStr = JSON.stringify(teamData);
+    
+    // If payload is too large (>100KB), progressively trim notes
+    if (teamDataStr.length > 100000 && teamData?.employees) {
+        const trimmed = {
+            ...teamData,
+            employees: teamData.employees.map(emp => ({
+                ...emp,
+                records: (emp.records || []).map(r => ({
+                    ...r,
+                    mn: r.mn ? r.mn.slice(0, 200) + (r.mn.length > 200 ? '...' : '') : undefined,
+                    en: r.en ? r.en.slice(0, 200) + (r.en.length > 200 ? '...' : '') : undefined
+                }))
+            }))
+        };
+        teamDataStr = JSON.stringify(trimmed);
+    }
 
-DATA:
-${JSON.stringify(teamData)}`;
+    const userPrompt = `${question}\n\nDATA:\n${teamDataStr}`;
 
     try {
         const response = await fetch(

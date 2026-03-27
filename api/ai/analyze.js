@@ -21,7 +21,7 @@ module.exports = async function handler(req, res) {
 
     const userPrompt = prompt || `Analyze this employee's work patterns, attendance, reliability, and give recommendations for their manager:
 
-${JSON.stringify(employeeData, null, 2)}
+${JSON.stringify(employeeData)}
 
 Please provide:
 1. Overall Work Pattern Summary (2-3 sentences)
