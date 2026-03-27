@@ -2872,9 +2872,11 @@ async function loadAIHistory() {
 function renderMarkdown(text) {
     if (!text) return '';
     let html = escapeHtml(text);
-    // Headers
+    // Headers (most # first to avoid partial matches)
+    html = html.replace(/^#{4,}\s+(.+)$/gm, '<h4 class="font-semibold text-charcoal mt-3 mb-1 text-sm">$1</h4>');
     html = html.replace(/^###\s+(.+)$/gm, '<h4 class="font-semibold text-charcoal mt-3 mb-1">$1</h4>');
     html = html.replace(/^##\s+(.+)$/gm, '<h3 class="font-semibold text-charcoal text-base mt-4 mb-1">$1</h3>');
+    html = html.replace(/^#\s+(.+)$/gm, '<h3 class="font-bold text-charcoal text-lg mt-4 mb-2">$1</h3>');
     // Bold (before bullet processing)
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong class="text-charcoal font-semibold">$1</strong>');
     // Inline code
@@ -2893,7 +2895,7 @@ function renderMarkdown(text) {
     // Line breaks (not after block elements)
     html = html.replace(/\n(?!<[hulo])/g, '<br>');
     // Clean up extra <br> after block elements
-    html = html.replace(/(<\/(?:h[34]|ul|ol|li|hr)>)\s*<br>/g, '$1');
+    html = html.replace(/(<\/(?:h[1-4]|ul|ol|li|hr)>)\s*<br>/g, '$1');
     return html;
 }
 
