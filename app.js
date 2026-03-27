@@ -3640,8 +3640,8 @@ function showSettingsModal() {
     content.getElementById('settingAzureApiVersion').value = AppState.settings.azure_api_version || '2024-06-01';
 
     function toggleProviderFields(provider) {
-        geminiFields.style.display = provider === 'gemini' ? '' : 'none';
-        azureFields.style.display = provider === 'azure_openai' ? '' : 'none';
+        geminiFields.classList.toggle('hidden', provider !== 'gemini');
+        azureFields.classList.toggle('hidden', provider !== 'azure_openai');
     }
     toggleProviderFields(savedProvider);
 
