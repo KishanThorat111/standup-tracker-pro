@@ -10,8 +10,9 @@ module.exports = async function handler(req, res) {
         return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const { apiKey: clientKey, question, teamData, mode } = req.body || {};
-    const apiKey = clientKey || process.env.GEMINI_API_KEY;
+    const { apiKey: clientKey, question, teamData, mode, provider: clientProvider, azureEndpoint, azureDeployment, azureApiVersion } = req.body || {};
+    const provider = clientProvider || 'gemini';
+    const apiKey = clientKey || (provider === 'gemini' ? process.env.GEMINI_API_KEY : process.env.AZURE_OPENAI_KEY);
 
     if (!apiKey || !question) {
         return res.status(400).json({ error: 'API key and question are required' });
@@ -178,33 +179,73 @@ RULES: Rank ALL employees. Use actual data. Evaluate note quality and work deliv
     const userPrompt = `${question}\n\nDATA:\n${teamDataStr}`;
 
     try {
-        const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`,
-            {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    contents: [
-                        { role: 'user', parts: [{ text: systemPrompt + '\n\n' + userPrompt }] }
-                    ],
-                    generationConfig: {
-                        temperature: 0.7,
-                        maxOutputTokens: 65536
-                    }
-                })
+        let response, text;
+
+        if (provider === 'azure_openai') {
+            // Azure OpenAI
+            if (!azureEndpoint || !azureDeployment) {
+                return res.status(400).json({ error: 'Azure endpoint and deployment name are required' });
             }
-        );
+            const baseUrl = azureEndpoint.replace(/\/+$/, '');
+            const version = azureApiVersion || '2024-06-01';
+            response = await fetch(
+                `${baseUrl}/openai/deployments/${encodeURIComponent(azureDeployment)}/chat/completions?api-version=${version}`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'api-key': apiKey
+                    },
+                    body: JSON.stringify({
+                        messages: [
+                            { role: 'system', content: systemPrompt },
+                            { role: 'user', content: userPrompt }
+                        ],
+                        temperature: 0.7,
+                        max_tokens: 16384
+                    })
+                }
+            );
 
-        if (!response.ok) {
-            const err = await response.json().catch(() => ({}));
-            return res.status(response.status).json({
-                error: err.error?.message || 'Gemini API error'
-            });
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                return res.status(response.status).json({
+                    error: err.error?.message || 'Azure OpenAI API error'
+                });
+            }
+
+            const data = await response.json();
+            text = data.choices?.[0]?.message?.content || 'No response generated';
+        } else {
+            // Gemini (default)
+            response = await fetch(
+                `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [
+                            { role: 'user', parts: [{ text: systemPrompt + '\n\n' + userPrompt }] }
+                        ],
+                        generationConfig: {
+                            temperature: 0.7,
+                            maxOutputTokens: 65536
+                        }
+                    })
+                }
+            );
+
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                return res.status(response.status).json({
+                    error: err.error?.message || 'Gemini API error'
+                });
+            }
+
+            const data = await response.json();
+            const parts = data.candidates?.[0]?.content?.parts || [];
+            text = parts.filter(p => p.text && !p.thought).map(p => p.text).join('\n') || parts[parts.length - 1]?.text || 'No response generated';
         }
-
-        const data = await response.json();
-        const parts = data.candidates?.[0]?.content?.parts || [];
-        const text = parts.filter(p => p.text && !p.thought).map(p => p.text).join('\n') || parts[parts.length - 1]?.text || 'No response generated';
 
         res.json({ response: text });
     } catch (err) {

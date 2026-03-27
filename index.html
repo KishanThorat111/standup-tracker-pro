@@ -946,21 +946,57 @@
                 </div>
             </div>
 
-            <!-- Gemini AI Section -->
+            <!-- AI Provider Section -->
             <div class="border-t border-border pt-4 space-y-3">
                 <h3 class="font-medium text-charcoal flex items-center gap-2">
                     <i data-lucide="sparkles" class="w-4 h-4 text-action"></i>
-                    Gemini AI
+                    AI Provider
                 </h3>
                 <div>
+                    <label class="block text-sm text-slate mb-2">Provider</label>
+                    <select id="settingAIProvider" class="input-field w-full">
+                        <option value="gemini">Google Gemini</option>
+                        <option value="azure_openai">Azure OpenAI</option>
+                    </select>
+                </div>
+
+                <!-- Gemini Fields -->
+                <div id="geminiFields">
                     <label class="block text-sm text-slate mb-2">API Key</label>
                     <div class="relative">
                         <input type="password" id="settingGeminiKey" class="input-field w-full pr-10" placeholder="Enter your Gemini API key">
-                        <button id="toggleKeyVisibility" class="absolute right-3 top-3 text-taupe hover:text-slate" type="button">
+                        <button id="toggleGeminiKeyVisibility" class="absolute right-3 top-3 text-taupe hover:text-slate" type="button">
                             <i data-lucide="eye" class="w-4 h-4"></i>
                         </button>
                     </div>
                     <p class="text-xs text-taupe mt-1">Get your key from <b>Google AI Studio</b> (aistudio.google.com)</p>
+                </div>
+
+                <!-- Azure OpenAI Fields -->
+                <div id="azureFields" class="hidden space-y-3">
+                    <div>
+                        <label class="block text-sm text-slate mb-2">Endpoint</label>
+                        <input type="text" id="settingAzureEndpoint" class="input-field w-full" placeholder="https://your-resource.openai.azure.com">
+                        <p class="text-xs text-taupe mt-1">Your Azure OpenAI resource endpoint</p>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-slate mb-2">API Key</label>
+                        <div class="relative">
+                            <input type="password" id="settingAzureKey" class="input-field w-full pr-10" placeholder="Enter your Azure OpenAI API key">
+                            <button id="toggleAzureKeyVisibility" class="absolute right-3 top-3 text-taupe hover:text-slate" type="button">
+                                <i data-lucide="eye" class="w-4 h-4"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-slate mb-2">Deployment Name</label>
+                        <input type="text" id="settingAzureDeployment" class="input-field w-full" placeholder="e.g. gpt-4o">
+                        <p class="text-xs text-taupe mt-1">The model deployment name from Azure portal</p>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-slate mb-2">API Version</label>
+                        <input type="text" id="settingAzureApiVersion" class="input-field w-full" placeholder="2024-06-01" value="2024-06-01">
+                    </div>
                 </div>
             </div>
 
@@ -1027,7 +1063,7 @@
                     <i data-lucide="sparkles" class="w-5 h-5 text-action"></i>
                     AI Assistant
                 </h2>
-                <span class="text-xs text-taupe">Powered by Gemini</span>
+                <span id="aiProviderLabel" class="text-xs text-taupe">Powered by Gemini</span>
             </div>
 
             <!-- Auto Prep Banner -->

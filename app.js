@@ -2508,18 +2508,33 @@ async function syncFromCloud() {
 const debouncedCloudSync = debounce(syncToCloud, 5000);
 
 // ============================================
-// GEMINI AI INTEGRATION
+// AI INTEGRATION (Multi-Provider)
 // ============================================
 
-async function getGeminiApiKey() {
+async function getAIConfig() {
     const settings = await db.app_settings.get('main');
-    return settings?.gemini_api_key || '';
+    const provider = settings?.ai_provider || 'gemini';
+    if (provider === 'azure_openai') {
+        return {
+            provider,
+            apiKey: settings?.azure_api_key || '',
+            azureEndpoint: settings?.azure_endpoint || '',
+            azureDeployment: settings?.azure_deployment || '',
+            azureApiVersion: settings?.azure_api_version || '2024-06-01'
+        };
+    }
+    return { provider, apiKey: settings?.gemini_api_key || '' };
+}
+
+function getAIProviderLabel() {
+    const provider = AppState.settings?.ai_provider || 'gemini';
+    return provider === 'azure_openai' ? 'Azure OpenAI' : 'Gemini';
 }
 
 async function analyzeWithGemini(employeeId) {
-    const apiKey = await getGeminiApiKey();
-    if (!apiKey) {
-        showToast('Please add your Gemini API key in Settings first', 'warning');
+    const aiConfig = await getAIConfig();
+    if (!aiConfig.apiKey) {
+        showToast(`Please add your ${getAIProviderLabel()} API key in Settings first`, 'warning');
         return null;
     }
 
@@ -2556,7 +2571,7 @@ async function analyzeWithGemini(employeeId) {
     try {
         const data = await apiCall('/ai/analyze', {
             method: 'POST',
-            body: JSON.stringify({ apiKey, employeeData })
+            body: JSON.stringify({ ...aiConfig, employeeData })
         });
         return data.analysis;
     } catch (err) {
@@ -2660,15 +2675,15 @@ async function buildEmployeeDataForAI(employeeId, daysBack = 14) {
 
 // Send query to AI chat endpoint
 async function askAI(question, teamData, mode = 'chat') {
-    const apiKey = await getGeminiApiKey();
-    if (!apiKey) {
-        showToast('Please add your Gemini API key in Settings first', 'warning');
+    const aiConfig = await getAIConfig();
+    if (!aiConfig.apiKey) {
+        showToast(`Please add your ${getAIProviderLabel()} API key in Settings first`, 'warning');
         return null;
     }
 
     const data = await apiCall('/ai/chat', {
         method: 'POST',
-        body: JSON.stringify({ apiKey, question, teamData, mode })
+        body: JSON.stringify({ ...aiConfig, question, teamData, mode })
     });
 
     return data.response;
@@ -2683,6 +2698,10 @@ function renderAIAssistant() {
     const template = document.getElementById('aiAssistantTemplate');
     mainContent.innerHTML = '';
     mainContent.appendChild(template.content.cloneNode(true));
+
+    // Update provider label dynamically
+    const providerLabel = document.getElementById('aiProviderLabel');
+    if (providerLabel) providerLabel.textContent = `Powered by ${getAIProviderLabel()}`;
 
     // Auto-prep based on current time
     const now = new Date();
@@ -3563,7 +3582,7 @@ async function showEmployeeProfile(employeeId) {
         <div>
             <button class="ai-analyze-btn btn-primary w-full flex items-center justify-center gap-2">
                 <i data-lucide="sparkles" class="w-4 h-4"></i>
-                AI Analysis (Gemini)
+                AI Analysis (${getAIProviderLabel()})
             </button>
             <div class="ai-result hidden mt-3 bg-cream border border-dusty/30 rounded-lg p-4">
                 <div class="flex items-center gap-2 mb-2">
@@ -3582,12 +3601,12 @@ async function showEmployeeProfile(employeeId) {
 
     content.querySelector('.ai-analyze-btn').addEventListener('click', async function() {
         this.disabled = true;
-        this.innerHTML = '<span class="animate-pulse">Analyzing with Gemini...</span>';
+        this.innerHTML = `<span class="animate-pulse">Analyzing with ${getAIProviderLabel()}...</span>`;
 
         const analysis = await analyzeWithGemini(employeeId);
 
         this.disabled = false;
-        this.innerHTML = '<i data-lucide="sparkles" class="w-4 h-4"></i> AI Analysis (Gemini)';
+        this.innerHTML = `<i data-lucide="sparkles" class="w-4 h-4"></i> AI Analysis (${getAIProviderLabel()})`;
         lucide.createIcons();
 
         if (analysis) {
@@ -3607,6 +3626,29 @@ function showSettingsModal() {
     content.getElementById('settingManagerName').value = AppState.settings.manager_name || '';
     content.getElementById('settingGeminiKey').value = AppState.settings.gemini_api_key || '';
 
+    // AI Provider setup
+    const providerSelect = content.getElementById('settingAIProvider');
+    const geminiFields = content.getElementById('geminiFields');
+    const azureFields = content.getElementById('azureFields');
+    const savedProvider = AppState.settings.ai_provider || 'gemini';
+    providerSelect.value = savedProvider;
+
+    // Load Azure fields
+    content.getElementById('settingAzureEndpoint').value = AppState.settings.azure_endpoint || '';
+    content.getElementById('settingAzureKey').value = AppState.settings.azure_api_key || '';
+    content.getElementById('settingAzureDeployment').value = AppState.settings.azure_deployment || '';
+    content.getElementById('settingAzureApiVersion').value = AppState.settings.azure_api_version || '2024-06-01';
+
+    function toggleProviderFields(provider) {
+        geminiFields.style.display = provider === 'gemini' ? '' : 'none';
+        azureFields.style.display = provider === 'azure_openai' ? '' : 'none';
+    }
+    toggleProviderFields(savedProvider);
+
+    providerSelect.addEventListener('change', () => {
+        toggleProviderFields(providerSelect.value);
+    });
+
     // Show last sync time
     const lastSync = AppState.settings.last_cloud_sync;
     const lastSyncEl = content.getElementById('lastSyncInfo');
@@ -3614,16 +3656,36 @@ function showSettingsModal() {
         lastSyncEl.textContent = `Last synced: ${new Date(lastSync).toLocaleString()}`;
     }
 
-    // Toggle API key visibility
-    content.getElementById('toggleKeyVisibility').addEventListener('click', () => {
+    // Toggle API key visibility — Gemini
+    content.getElementById('toggleGeminiKeyVisibility').addEventListener('click', () => {
         const input = document.getElementById('settingGeminiKey');
+        input.type = input.type === 'password' ? 'text' : 'password';
+    });
+
+    // Toggle API key visibility — Azure
+    content.getElementById('toggleAzureKeyVisibility').addEventListener('click', () => {
+        const input = document.getElementById('settingAzureKey');
         input.type = input.type === 'password' ? 'text' : 'password';
     });
     
     content.getElementById('saveSettingsBtn').addEventListener('click', async () => {
         const name = document.getElementById('settingManagerName').value;
         const geminiKey = document.getElementById('settingGeminiKey').value.trim();
-        await db.app_settings.update('main', { manager_name: name, gemini_api_key: geminiKey });
+        const aiProvider = document.getElementById('settingAIProvider').value;
+        const azureEndpoint = document.getElementById('settingAzureEndpoint').value.trim();
+        const azureKey = document.getElementById('settingAzureKey').value.trim();
+        const azureDeployment = document.getElementById('settingAzureDeployment').value.trim();
+        const azureApiVersion = document.getElementById('settingAzureApiVersion').value.trim() || '2024-06-01';
+
+        await db.app_settings.update('main', {
+            manager_name: name,
+            gemini_api_key: geminiKey,
+            ai_provider: aiProvider,
+            azure_endpoint: azureEndpoint,
+            azure_api_key: azureKey,
+            azure_deployment: azureDeployment,
+            azure_api_version: azureApiVersion
+        });
         await AppState.loadSettings();
         debouncedCloudSync();
         showToast('Settings saved', 'success');
