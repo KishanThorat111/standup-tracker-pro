@@ -3617,19 +3617,21 @@ async function handleMorningPrep() {
 TODAY: ${teamData.today} (${teamData.dayOfWeek}), Time: ${currentTime}, Team: ${teamData.teamSize} members.
 Last working day was: ${teamData.lastWorkDay}.
 
-REQUIREMENTS:
-- The standup has NOT happened yet (if before 10 AM) — prepare me with QUESTIONS to ask, don't say anyone missed today
-- Cover EVERY team member — present, absent, or not yet marked. Zero exceptions.
-- For each person, use their actual work notes (mn/en) to ask questions about THEIR specific tasks
-- For absent people, include what they were last working on so I know context when they return
-- Flag undelivered promises from "pending" field — these are morning commitments with no evening delivery
-- "att" field = pre-computed attendance: p=present days, e=evening submissions, total=days in data
+STATUS REMINDER: PA/PL/AA/RC/AD = ALL working (RC=Chat Only means working remotely via chat, NOT absent). OL=On Leave. IV=Informed Valid absence with reason. NR/NI=Unreachable.
 
-Pre-computed fields per person:
-- lastWork: most recent day with work notes (what they were last doing)
-- pending: morning promises that were never closed with evening delivery
+REQUIREMENTS:
+- The standup has NOT happened yet — prepare me with QUESTIONS to ask each person. Don't say anyone "missed today."
+- Cover EVERY team member — working members (PA/PL/AA/RC/AD) AND away members (OL/IV/NR/NI). Zero exceptions.
+- RC (Chat Only) and AD (Async Deferred) are WORKING — they have tasks, ask about their deliverables
+- Parse their actual work notes (mn/en) to understand WHAT they're working on, then generate questions a tech lead would ask
+- Use "pending" field for PREVIOUS days' unfulfilled promises — these are open accountability items
+- "att" field has pre-computed attendance stats
+
+Data fields per person:
+- lastWork: most recent day with actual work notes
+- pending: previous morning promises never closed with evening delivery
 - absences: recent absence dates and reasons
-- days: full 7-day record history with morning/evening status and notes`;
+- days: full 7-day record history`;
         const response = await askAI(question, teamData, 'morning_prep');
         loadingCard.remove();
         addAIResponse('Morning Standup Prep (10 AM)', 'sunrise', response || 'No response');
@@ -3654,19 +3656,21 @@ async function handleEveningPrep() {
         const question = `Prepare me for today's 6:30 PM evening update meeting.
 TODAY: ${teamData.today} (${teamData.dayOfWeek}), Time: ${currentTime}, Team: ${teamData.teamSize} members.
 
-REQUIREMENTS:
-- Cover EVERY team member — present AND absent, not just who showed up today. Zero exceptions.
-- For present members: show what they COMMITTED to this morning (today's mn notes) and what I should VERIFY they completed
-- For absent members: show what they were last working on so I can track continuity when they return
-- If someone has no evening update yet, flag it — but NR evening ≠ absent (they just haven't submitted yet)
-- Check "pending" field for unfulfilled promises from PREVIOUS days
-- "att" field = pre-computed attendance: p=present days, e=evening submissions, total=days in data
+STATUS REMINDER: PA/PL/AA/RC/AD = ALL working today (RC=Chat Only means working remotely via chat, NOT absent). OL=On Leave. IV=Informed Valid absence with reason. NR/NI=Unreachable.
 
-Pre-computed fields per person:
-- lastWork: most recent day with work notes (what they were last doing)
-- pending: morning promises that were never closed with evening delivery
+REQUIREMENTS:
+- Cover EVERY team member — working members (PA/PL/AA/RC/AD) AND away members (OL/IV/NR/NI). Zero exceptions.
+- RC (Chat Only) and AD (Async Deferred) are WORKING — verify their deliverables just like PA members
+- For working members: parse their morning notes (mn) to identify specific deliverables, then generate verification questions a tech lead would ask
+- For away members: show what they were last working on (from lastWork) so I can track continuity
+- Use "pending" field for PREVIOUS days' unfulfilled promises — NOT today's morning plan
+- "att" field has pre-computed attendance stats
+
+Data fields per person:
+- lastWork: most recent day with actual work notes
+- pending: previous morning promises never closed with evening delivery
 - absences: recent absence dates and reasons
-- days: full 7-day record history with morning/evening status and notes`;
+- days: full 7-day record history`;
         const response = await askAI(question, teamData, 'evening_prep');
         loadingCard.remove();
         addAIResponse('Evening Update Prep (6:30 PM)', 'sunset', response || 'No response');
