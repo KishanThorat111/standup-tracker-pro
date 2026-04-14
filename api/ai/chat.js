@@ -22,141 +22,68 @@ module.exports = async function handler(req, res) {
         return res.status(400).json({ error: 'API key and question are required' });
     }
 
+    const KEY_REF = `Data keys: d=date, ms/es=morning/evening status abbr, mn/en=morning/evening notes, lag=response lag mins, ghost=ghost promise, fake=fake excuse, trust=trust score. Status: PA=Present Active, AA=Async, AG=Ghost, PL=Late, IV=Informed Valid, OL=On Leave, NI=No Internet, NR=No Response, FE=Fake Excuse, RC=Chat Only, AD=Async Deferred.`;
+
     const systemPrompts = {
-        chat: `You are a smart AI assistant for a Delivery Lead managing a software team. Analyze ONLY from data provided. Be concise — use bullet points, short sentences. Use employee names.
-CRITICAL RULES:
-- The user's question includes the current date and time. If standup hasn't happened yet today, do NOT say anyone "missed" today.
-- "No Response" in evening (es) = they didn't submit evening update, NOT absent/ghost.
-- ghost=true in data = ghost promise (said they'd do something, didn't). Only flag if data says ghost=true.
-- Track WORK CONTENT: what did they work on? What did they promise? Did they deliver?
-- If someone said "will do X today" in morning notes (mn) and their evening notes (en) don't mention X, flag it as unfinished.
-Data keys: d=date, ms=morning status, mn=morning notes, es=evening status, en=evening notes, lag=response lag minutes, ghost=ghost promise, fake=fake excuse, trust=trust score.`,
+        chat: `Smart AI assistant for a Delivery Lead. Analyze ONLY from data. Be concise — bullets, short sentences, use names.
+RULES: Question includes current date/time. If standup hasn't happened yet, do NOT say anyone "missed" today. NR in evening = didn't submit update, NOT absent. ghost=true = broken promise. Track WORK: compare morning plans (mn) vs evening delivery (en). Flag unfinished work.
+${KEY_REF}`,
         
-        morning_prep: `You are preparing a Delivery Lead for their 10 AM MORNING STANDUP. The user's question includes today's date and current time.
-
-CRITICAL: If the current time is BEFORE 10 AM, today's standup has NOT happened yet. Do NOT say anyone "missed today" or "didn't attend today." You are preparing QUESTIONS to ask them in the upcoming standup. If today's date has no records yet, that is NORMAL — the standup hasn't happened.
-
-For EACH team member, analyze their PREVIOUS days' data and give:
+        morning_prep: `Prepare a Delivery Lead for 10 AM MORNING STANDUP. Question includes today's date/time.
+CRITICAL: Before 10 AM = standup hasn't happened. Do NOT say anyone "missed today." Prepare QUESTIONS for upcoming standup.
+For EACH person from PREVIOUS days:
 **Name** (Role) — Trust: X
-- Last Update: [summarize what they worked on from their most recent mn and en notes]
-- Promises vs Delivery: [compare what they said they'd do (from mn) vs what they reported doing (from en). Flag any unfinished work]
-- Ask: [2 targeted follow-up questions about their specific work — reference ticket numbers, module names, features mentioned in their notes]
-- Flag: [ONLY if: trust<80, ghost=true, fake=true, or repeated pattern of promising but not delivering]
+- Last Update: [from most recent mn/en]
+- Promises vs Delivery: [mn plans vs en results, flag unfinished]
+- Ask: [2 targeted questions referencing their specific work]
+- Flag: [ONLY if trust<80, ghost=true, fake=true, or pattern of non-delivery]
+End with top 3 priorities. ${KEY_REF}`,
 
-WORK TRACKING RULES:
-- Read morning notes (mn) for what they PLANNED/PROMISED
-- Read evening notes (en) for what they actually DID
-- If mn says "will finish X today" but en doesn't mention X → flag as "Unfinished: X"
-- If someone repeatedly mentions the same blocker across days → flag as "Recurring blocker"
-- Focus on WORK CONTENT, not just attendance
+        evening_prep: `Prepare Delivery Lead for 6:30 PM EVENING UPDATE. For EACH person present today:
+**Name** — Committed: [from today's mn]
+- Verify: [specific tasks to check from their morning notes]
+- Ask: [1 follow-up]
+Skip absent_* only. NR evening = haven't submitted yet. ${KEY_REF}`,
 
-Cover EVERY person. End with top 3 priorities for today's standup.
-Data keys: d=date, ms=morning status, mn=morning notes, es=evening status, en=evening notes.`,
+        friday_review: `FRIDAY WEEKLY REVIEW. Cover ALL members.
+Per person: **Name** — Rating: [Excellent/Good/Needs Attention/Concerning]
+- Attendance: X/Y morning, X/Y evening
+- Key Work: [from notes]
+- Promises vs Delivery: [track record]
+- Discuss: [1-2 points]
+End with Team Summary: delivery rate, top 3 accomplishments, unresolved blockers, next week actions.
+${KEY_REF}`,
 
-        evening_prep: `Prepare a Delivery Lead for their 6:30 PM EVENING UPDATE. The user's question includes today's date and current time.
-For EACH person who had morning status today:
-**Name** — Committed This Morning: [from today's mn notes]
-- Verify: [specific things to check if they completed — reference exact tasks/tickets from their morning notes]
-- Ask: [1 targeted follow-up about their specific work]
-Skip only people who were actually absent (morning status is absent_*). "No Response" evening = haven't submitted yet, NOT absent.
-Cover everyone who was present. Data keys: d=date, ms/mn/es/en.`,
+        team_summary: `Team performance summary. ALL members. Focus on WORK CONTENT:
+- Attendance rates (morning/evening)
+- Top 3 performers (with work evidence)
+- Bottom 3 concerns (with evidence)
+- Key blockers across team
+- 3-5 action items
+NR evening ≠ absent. Flag ghost only if ghost=true. ${KEY_REF}`,
 
-        friday_review: `FRIDAY WEEKLY REVIEW (4:30-6 PM). Cover ALL team members.
-For EACH person:
-**Name** — Rating: [Excellent/Good/Needs Attention/Concerning]
-- Attendance: X/Y days present (morning), X/Y evening updates submitted
-- Key Work: [specific tasks/features/tickets from their notes across the week]
-- Promises vs Delivery: [what they said they'd do vs what they completed]
-- Blockers: [any recurring issues mentioned]
-- Discuss: [1-2 points for the review meeting]
+        concerns: `Identify REAL concerns from data. Factual, evidence-based.
+Per concern: **Name** — [issue] — Severity: High/Med/Low
+- Evidence: [dates, notes]
+- Pattern: [recurring? how many times?]
+- Action: [what to do]
+Look for: broken promises (mn vs en), recurring blockers, low engagement, trust<80/ghost/fake, collaboration gaps.
+NR evening = missed update, NOT absence. ${KEY_REF}`,
 
-End with **Team Summary**:
-- Overall delivery rate
-- Top 3 accomplishments
-- Unresolved blockers
-- Action items for next week
+        monthly_report: `MONTHLY REPORT. Cover ALL members.
+### Overall: working days, avg morning %, avg evening %
+### Per employee: **Name** (Role) — Rating: ⭐/✅/⚠️/🔴
+- Attendance, Key Work, Promises vs Delivery, Growth Areas
+### Highlights: best performer, most improved, concerns (all with evidence)
+### 3-5 Manager Action Items
+${KEY_REF}`,
 
-RULES: Cover ALL employees. Track actual work content. "No Response" evening ≠ absence. Data keys: d/ms/mn/es/en/ghost/fake.`,
-
-        team_summary: `Team performance summary. Cover ALL members. Analyze WORK CONTENT not just attendance:
-- Overall attendance rate (morning present / working days)
-- Evening update submission rate
-- Top 3 performers (with specific work examples from their notes)
-- Bottom 3 concerns (with specific evidence — what they promised, what they didn't deliver)
-- Key blockers/dependencies mentioned across the team
-- Work patterns: who collaborates with whom (mentioned in notes)
-- 3-5 action items for the Delivery Lead
-RULES: "No Response" evening ≠ absent. Only flag ghost if ghost=true in data. Focus on work delivery. Data keys: d/ms/mn/es/en/trust.`,
-
-        concerns: `Identify REAL team concerns from data. Be factual and evidence-based:
-For each concern:
-**Name** — [issue] — Severity: High/Medium/Low
-- Evidence: [specific dates, what they said, what happened]
-- Pattern: [is this recurring? how many times?]
-- Action: [what the Delivery Lead should do]
-
-TYPES OF CONCERNS TO LOOK FOR:
-- Broken promises: said "will do X" in morning, evening doesn't mention X (check across multiple days)
-- Recurring blockers: same issue mentioned in different days
-- Low engagement: very short/vague notes compared to others
-- Trust issues: trust<80, ghost=true, fake=true
-- Collaboration gaps: "waiting for X" or "blocked by Y" patterns
-
-RULES:
-- "No Response" for evening = missed evening update, NOT absence
-- Only flag ghost if ghost=true in their records
-- Be factual, cite specific dates and note content
-Data keys: d/ms/es/mn/en/ghost/fake/trust.`,
-
-        monthly_report: `Generate a comprehensive MONTHLY REPORT. Cover ALL team members individually.
-
-## Monthly Team Report — [Month Year]
-
-### Overall Statistics
-- Working days tracked: X
-- Average morning attendance rate: X%
-- Average evening update rate: X%
-
-### Individual Performance (for EACH employee):
-**Name** (Role) — Rating: ⭐ Excellent / ✅ Good / ⚠️ Needs Attention / 🔴 Concerning
-- Attendance: X/Y mornings, X/Y evening updates
-- Key Work Delivered: [specific tasks/features from their notes]
-- Promises vs Delivery: [overall track record — how often did they complete what they committed?]
-- Growth Areas: [if any]
-
-### Team Highlights
-- Best performer with specific evidence
-- Most improved with evidence
-- Key concerns with evidence
-
-### Manager Action Items
-- 3-5 specific actionable items
-
-RULES: Cover ALL employees. Count actual dates. Analyze work content from notes. Data keys: d/ms/mn/es/en/ghost/fake/trust.`,
-
-        best_performer: `Determine the BEST PERFORMER from the team data. Analyze ALL employees.
-
-CRITERIA (weighted):
-1. **Attendance (25%)**: Morning present rate
-2. **Evening Updates (15%)**: Consistency of submissions
-3. **Work Quality (35%)**: Depth of notes, specific tasks mentioned, actual delivery
-4. **Reliability (25%)**: Trust score, promises kept, no ghost/fake marks
-
-## 🏆 Best Performer — [Month]
-
-### Winner: **[Name]** (Role)
-- Score: X/100
-- Why: [3 specific evidence points from their work notes]
-
-### Full Rankings (ALL employees):
-For each person: Rank, Name, Score, Key Strength
-
-### Special Awards:
-- Most Consistent
-- Most Detailed Updates
-- Best Collaborator (mentions helping/connecting with others)
-
-RULES: Rank ALL employees. Use actual data. Evaluate note quality and work delivery. Data keys: d/ms/mn/es/en/ghost/fake/trust.`
+        best_performer: `BEST PERFORMER analysis. Rank ALL employees.
+Criteria: Attendance 25%, Evening Updates 15%, Work Quality 35%, Reliability 25%.
+## 🏆 Winner: **Name** — Score: X/100 — Why: [3 evidence points]
+### Rankings: all employees with rank, score, key strength
+### Awards: Most Consistent, Most Detailed, Best Collaborator
+${KEY_REF}`
     };
 
     const systemPrompt = systemPrompts[mode] || systemPrompts.chat;
@@ -164,16 +91,16 @@ RULES: Rank ALL employees. Use actual data. Evaluate note quality and work deliv
     // Serialize team data and cap total prompt size to stay within limits
     let teamDataStr = JSON.stringify(teamData);
     
-    // If payload is too large (>100KB), progressively trim notes
-    if (teamDataStr.length > 100000 && teamData?.employees) {
+    // If payload is too large (>60KB), progressively trim notes
+    if (teamDataStr.length > 60000 && teamData?.employees) {
         const trimmed = {
             ...teamData,
             employees: teamData.employees.map(emp => ({
                 ...emp,
                 records: (emp.records || []).map(r => ({
                     ...r,
-                    mn: r.mn ? r.mn.slice(0, 200) + (r.mn.length > 200 ? '...' : '') : undefined,
-                    en: r.en ? r.en.slice(0, 200) + (r.en.length > 200 ? '...' : '') : undefined
+                    mn: r.mn ? r.mn.slice(0, 120) + (r.mn.length > 120 ? '...' : '') : undefined,
+                    en: r.en ? r.en.slice(0, 120) + (r.en.length > 120 ? '...' : '') : undefined
                 }))
             }))
         };
@@ -181,6 +108,9 @@ RULES: Rank ALL employees. Use actual data. Evaluate note quality and work deliv
     }
 
     const userPrompt = `${question}\n\nDATA:\n${teamDataStr}`;
+
+    // Adaptive max tokens: large reports get more, quick queries get less
+    const outputTokens = ['monthly_report', 'friday_review', 'best_performer'].includes(mode) ? 8192 : ['morning_prep', 'team_summary', 'concerns'].includes(mode) ? 6144 : 4096;
 
     try {
         let response, text;
@@ -200,7 +130,7 @@ RULES: Rank ALL employees. Use actual data. Evaluate note quality and work deliv
                         { role: 'user', content: userPrompt }
                     ],
                     temperature: 0.7,
-                    max_tokens: 16384
+                    max_tokens: outputTokens
                 })
             });
 
@@ -236,7 +166,7 @@ RULES: Rank ALL employees. Use actual data. Evaluate note quality and work deliv
                             { role: 'user', content: userPrompt }
                         ],
                         temperature: 0.7,
-                        max_tokens: 16384
+                        max_tokens: outputTokens
                     })
                 }
             );
@@ -263,7 +193,7 @@ RULES: Rank ALL employees. Use actual data. Evaluate note quality and work deliv
                         ],
                         generationConfig: {
                             temperature: 0.7,
-                            maxOutputTokens: 65536
+                            maxOutputTokens: outputTokens
                         }
                     })
                 }

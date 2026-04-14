@@ -22,60 +22,40 @@ module.exports = async function handler(req, res) {
         return res.status(400).json({ error: 'API key and employee data are required' });
     }
 
-    const systemPrompt = `You are an expert AI work pattern analyst for a team standup tracking system. You analyze individual employee data thoroughly and provide comprehensive, data-driven insights. Format your response with clear markdown sections and use bullet points for readability.`;
+    const systemPrompt = `You are an expert work pattern analyst. Analyze employee standup data and provide thorough, evidence-based insights using markdown. Be data-driven — cite specific dates and notes. Never assume; only use what's in the data.
+KEY: d=date, ms/es=morning/evening status abbreviation, mn/en=morning/evening notes, ma/ea=async content, lag=response lag mins, ghost=unfulfilled promise, v=verification(legit/fake). Status codes: PA=Present Active, AA=Async, AG=Ghost Promise, PL=Late, IV=Informed Valid, OL=On Leave, NI=No Internet, NR=No Response, FE=Fake Excuse, RC=Chat Only, AD=Async Deferred. The "stats" object has pre-computed counts so use them directly.`;
 
-    const userPrompt = prompt || `Perform a comprehensive individual performance analysis for this employee based on their standup attendance and work data:
-
+    const userPrompt = prompt || `Analyze this employee:
 ${JSON.stringify(employeeData)}
 
-FIELD REFERENCE: morning_status/evening_status = standup attendance status. morning_notes/evening_notes = what they said in standup (work updates, plans, blockers). lag_minutes = how long after standup time they responded. trust_score = system-calculated reliability score (0-100).
-
-Please provide a DETAILED analysis covering ALL of the following sections:
+Provide ALL 9 sections (use the pre-computed stats, don't recount):
 
 ## 1. Executive Summary
-2-3 sentences summarizing this person's overall performance, reliability, and work patterns.
+2-3 sentences on overall performance and reliability.
 
 ## 2. Attendance & Participation
-- Total standups attended vs expected (morning and evening separately)
-- Attendance rate percentage
-- Pattern analysis: Are they consistent? Any day-of-week patterns? (e.g., frequent absences on Mondays/Fridays)
-- Late arrival frequency and average response lag
+Morning/evening rates (use stats.present/${employeeData.days} and stats.evening/${employeeData.days}), day-of-week patterns if visible, late frequency, avg response lag (stats.avgLag mins).
 
 ## 3. Work Content Analysis
-- What types of work/tasks have they been doing? (based on their standup notes)
-- Are they working on meaningful deliverables or giving vague updates?
-- Key projects/tasks mentioned across the period
-- Completions: Did they follow through on what they said they'd do? (compare morning promises to evening updates)
+What tasks/projects from their notes (mn/en)? Are updates specific or vague? Did morning promises match evening delivery? Flag unfinished work with dates.
 
-## 4. Reliability & Trust Assessment
-- Trust score interpretation (current: ${employeeData.trust_score || 100}/100)
-- Ghost promises: How many times did they promise work but not deliver?
-- Fake excuses or questionable absences (if any)
-- Overall consistency and dependability rating (out of 10)
+## 4. Reliability & Trust
+Trust: ${employeeData.trust || 100}/100. Ghost promises: ${employeeData.stats?.ghosts || 0}. Fakes: ${employeeData.stats?.fakes || 0}. Dependability rating /10.
 
 ## 5. Leave & Absence Patterns
-- Total absences/leaves taken
-- Types of absences (No Internet, No Response, Informed Valid, On Leave, Fake Excuse)
-- Reasons given for absences
-- Are absences clustered (before/after weekends, holidays)?
-- Verification status of absence claims
+${employeeData.stats?.absences || 0} total absences, ${employeeData.stats?.leaves || 0} leaves. Types, reasons from notes, clustering patterns, verification status.
 
-## 6. Strengths (Pros)
-List specific strengths with evidence from the data.
+## 6. Strengths
+List with evidence from data.
 
-## 7. Areas of Concern (Cons)
-List specific concerns with evidence from the data.
+## 7. Concerns
+List with evidence from data.
 
-## 8. Efficiency & Productivity Assessment
-- Based on work notes: How productive do they appear?
-- Are they taking on enough work?
-- Do they finish tasks or carry them over?
-- Response time/lag analysis
+## 8. Efficiency Assessment
+Productivity based on work notes depth, task completion patterns, lag analysis.
 
-## 9. Recommendations for Manager
-- 3-5 specific, actionable recommendations
-- Suggested discussion points for 1-on-1
-- Any flags that need immediate attention`;
+## 9. Manager Recommendations
+3-5 actionable items, 1-on-1 discussion points, immediate flags.`;
 
     try {
         let text;
@@ -95,7 +75,7 @@ List specific concerns with evidence from the data.
                         { role: 'user', content: userPrompt }
                     ],
                     temperature: 0.7,
-                    max_tokens: 16384
+                    max_tokens: 6144
                 })
             });
 
@@ -131,7 +111,7 @@ List specific concerns with evidence from the data.
                             { role: 'user', content: userPrompt }
                         ],
                         temperature: 0.7,
-                        max_tokens: 16384
+                        max_tokens: 6144
                     })
                 }
             );
@@ -157,7 +137,7 @@ List specific concerns with evidence from the data.
                         ],
                         generationConfig: {
                             temperature: 0.7,
-                            maxOutputTokens: 16384
+                            maxOutputTokens: 6144
                         }
                     })
                 }

@@ -2600,47 +2600,52 @@ async function analyzeWithGemini(employeeId) {
 
     records.sort((a, b) => b.date.localeCompare(a.date));
 
-    // Count absences by type
-    let absentCount = 0, ghostCount = 0, fakeCount = 0, lateCount = 0, leaveCount = 0;
+    // Pre-compute stats so AI doesn't need to count (saves output tokens)
+    const PARTICIPATED = ['present_active', 'present_async', 'present_late', 'remote_chat_only', 'remote_async_deferred'];
+    let mPresent = 0, eSubmitted = 0, ghosts = 0, fakes = 0, lates = 0, absences = 0, leaves = 0;
+    let totalLag = 0, lagCount = 0;
     records.forEach(r => {
         const ms = r.morning?.status || '';
-        if (ms.includes('absent') || ms === 'informed_valid' || ms === 'on_leave') absentCount++;
-        if (ms === 'present_ghost') ghostCount++;
-        if (ms === 'absent_fake_excuse') fakeCount++;
-        if (ms === 'present_late') lateCount++;
-        if (ms === 'on_leave') leaveCount++;
+        const es = r.evening?.status || '';
+        if (PARTICIPATED.includes(ms)) mPresent++;
+        if (es && es !== 'absent_no_response' && !isFullDayAbsentStatus(ms)) eSubmitted++;
+        if (ms === 'present_ghost') ghosts++;
+        if (ms === 'absent_fake_excuse') fakes++;
+        if (ms === 'present_late') lates++;
+        if (ms === 'on_leave') leaves++;
+        if (ms.includes('absent') || ms === 'informed_valid' || ms === 'on_leave') absences++;
+        const lag = r.morning?.response_lag_minutes;
+        if (lag > 0 && lag <= 480) { totalLag += lag; lagCount++; }
     });
+
+    // Compact data format: short keys, only non-empty fields, notes capped at 150 chars
+    const trimNote = (n) => { if (!n) return undefined; const t = n.trim(); return t ? (t.length > 150 ? t.slice(0, 150) + '...' : t) : undefined; };
+    const abbr = (s) => STATUS_CONFIG[s]?.abbr || undefined;
 
     const employeeData = {
         name: employee.full_name,
         role: employee.role,
         team: employee.team,
-        email: employee.email || '',
-        trust_score: employee.trust_score,
-        total_days_tracked: records.length,
-        summary_stats: {
-            total_absences: absentCount,
-            ghost_promises: ghostCount,
-            fake_excuses: fakeCount,
-            late_arrivals: lateCount,
-            leaves_taken: leaveCount
-        },
-        records: records.map(r => ({
-            date: r.date,
-            morning_status: STATUS_CONFIG[r.morning?.status]?.label || 'Not recorded',
-            morning_notes: r.morning?.notes || '',
-            morning_async: r.morning?.async_content || '',
-            evening_status: STATUS_CONFIG[r.evening?.status]?.label || 'Not recorded',
-            evening_notes: r.evening?.notes || '',
-            evening_async: r.evening?.async_content || '',
-            lag_minutes: r.morning?.response_lag_minutes || 0,
-            ghost_promise: r.morning?.status === 'present_ghost' ? {
-                fulfilled: r.morning?.ghost_promise?.fulfilled || false,
-                lag_hours: r.morning?.ghost_promise?.lag_hours || 0
-            } : undefined,
-            verification: r.morning?.verification_status || undefined,
-            absence_reason: (r.morning?.status?.includes('absent') || r.morning?.status === 'informed_valid' || r.morning?.status === 'on_leave') ? (r.morning?.notes || 'Not mentioned') : undefined
-        }))
+        trust: employee.trust_score || 100,
+        days: records.length,
+        stats: { present: mPresent, evening: eSubmitted, ghosts, fakes, lates, absences, leaves, avgLag: lagCount > 0 ? Math.round(totalLag / lagCount) : 0 },
+        records: records.map(r => {
+            const rec = { d: r.date };
+            if (r.morning?.status) rec.ms = abbr(r.morning.status);
+            if (r.evening?.status) rec.es = abbr(r.evening.status);
+            const mn = trimNote(r.morning?.notes);
+            if (mn) rec.mn = mn;
+            const en = trimNote(r.evening?.notes);
+            if (en) rec.en = en;
+            const ma = trimNote(r.morning?.async_content);
+            if (ma) rec.ma = ma;
+            const ea = trimNote(r.evening?.async_content);
+            if (ea) rec.ea = ea;
+            if (r.morning?.response_lag_minutes > 0) rec.lag = r.morning.response_lag_minutes;
+            if (r.morning?.status === 'present_ghost') rec.ghost = !r.morning?.ghost_promise?.fulfilled;
+            if (r.morning?.verification_status && r.morning.verification_status !== 'unverified') rec.v = r.morning.verification_status === 'verified_legit' ? 'legit' : 'fake';
+            return rec;
+        })
     };
 
     try {
@@ -3113,24 +3118,21 @@ async function buildTeamDataForAI(daysBack = 7) {
         .filter(r => r.date >= cutoffStr)
         .toArray();
 
-    // Trim notes to avoid exceeding API payload limits
-    // For larger windows (7+ days), cap notes length per entry
-    const maxNoteLen = daysBack >= 7 ? 300 : 500;
+    // Trim notes — shorter for larger windows to control token usage
+    const maxNoteLen = daysBack >= 14 ? 120 : daysBack >= 7 ? 200 : 300;
     function trimNote(note) {
-        if (!note) return '';
+        if (!note) return undefined;
         const trimmed = note.trim();
+        if (!trimmed) return undefined;
         if (trimmed.length <= maxNoteLen) return trimmed;
         return trimmed.slice(0, maxNoteLen) + '...';
     }
 
+    const abbr = (s) => STATUS_CONFIG[s]?.abbr || undefined;
+
     return {
         today: AppState.currentDate,
         manager: AppState.settings.manager_name || 'Manager',
-        schedule: {
-            morning_standup: '10:00 AM - 10:30 AM IST',
-            evening_update: '6:30 PM - 7:00 PM IST',
-            friday_weekly_review: '4:30 PM - 6:00 PM IST (Fridays)'
-        },
         employees: employees.filter(e => e.is_active && !e.standup_exempt).map(emp => {
             const empRecords = allRecords
                 .filter(r => r.employee_id === emp.id)
@@ -3143,11 +3145,13 @@ async function buildTeamDataForAI(daysBack = 7) {
                 trust: emp.trust_score,
                 records: empRecords.map(r => {
                     const rec = { d: r.date };
-                    if (r.morning?.status) rec.ms = STATUS_CONFIG[r.morning.status]?.label || r.morning.status;
-                    if (r.morning?.notes) rec.mn = trimNote(r.morning.notes);
-                    if (r.morning?.response_lag_minutes) rec.lag = r.morning.response_lag_minutes;
-                    if (r.evening?.status) rec.es = STATUS_CONFIG[r.evening.status]?.label || r.evening.status;
-                    if (r.evening?.notes) rec.en = trimNote(r.evening.notes);
+                    if (r.morning?.status) rec.ms = abbr(r.morning.status);
+                    if (r.evening?.status) rec.es = abbr(r.evening.status);
+                    const mn = trimNote(r.morning?.notes);
+                    if (mn) rec.mn = mn;
+                    const en = trimNote(r.evening?.notes);
+                    if (en) rec.en = en;
+                    if (r.morning?.response_lag_minutes > 0) rec.lag = r.morning.response_lag_minutes;
                     if (r.morning?.status === 'present_ghost') rec.ghost = true;
                     if (r.morning?.status === 'absent_fake_excuse') rec.fake = true;
                     return rec;
@@ -3157,7 +3161,7 @@ async function buildTeamDataForAI(daysBack = 7) {
     };
 }
 
-// Build data for a single employee
+// Build data for a single employee (compact format for AI)
 async function buildEmployeeDataForAI(employeeId, daysBack = 14) {
     const employee = await db.employees.get(employeeId);
     if (!employee) return null;
@@ -3172,22 +3176,28 @@ async function buildEmployeeDataForAI(employeeId, daysBack = 14) {
 
     records.sort((a, b) => b.date.localeCompare(a.date));
 
+    const trimNote = (n) => { if (!n) return undefined; const t = n.trim(); return t ? (t.length > 200 ? t.slice(0, 200) + '...' : t) : undefined; };
+    const abbr = (s) => STATUS_CONFIG[s]?.abbr || undefined;
+
     return {
         name: employee.full_name,
         role: employee.role,
         team: employee.team,
-        trust_score: employee.trust_score,
-        records: records.map(r => ({
-            date: r.date,
-            morning_status: STATUS_CONFIG[r.morning?.status]?.label || 'Not recorded',
-            morning_notes: r.morning?.notes || '',
-            morning_async: r.morning?.async_content || '',
-            evening_status: STATUS_CONFIG[r.evening?.status]?.label || 'Not recorded',
-            evening_notes: r.evening?.notes || '',
-            evening_async: r.evening?.async_content || '',
-            is_ghost: r.morning?.status === 'present_ghost',
-            is_fake: r.morning?.status === 'absent_fake_excuse'
-        }))
+        trust: employee.trust_score,
+        records: records.map(r => {
+            const rec = { d: r.date };
+            if (r.morning?.status) rec.ms = abbr(r.morning.status);
+            if (r.evening?.status) rec.es = abbr(r.evening.status);
+            const mn = trimNote(r.morning?.notes);
+            if (mn) rec.mn = mn;
+            const en = trimNote(r.evening?.notes);
+            if (en) rec.en = en;
+            const ma = trimNote(r.morning?.async_content);
+            if (ma) rec.ma = ma;
+            if (r.morning?.status === 'present_ghost') rec.ghost = true;
+            if (r.morning?.status === 'absent_fake_excuse') rec.fake = true;
+            return rec;
+        })
     };
 }
 
