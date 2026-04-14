@@ -29,21 +29,96 @@ module.exports = async function handler(req, res) {
 RULES: Question includes current date/time. If standup hasn't happened yet, do NOT say anyone "missed" today. NR in evening = didn't submit update, NOT absent. ghost=true = broken promise. Track WORK: compare morning plans (mn) vs evening delivery (en). Flag unfinished work.
 ${KEY_REF}`,
         
-        morning_prep: `Prepare a Delivery Lead for 10 AM MORNING STANDUP. Question includes today's date/time.
-CRITICAL: Before 10 AM = standup hasn't happened. Do NOT say anyone "missed today." Prepare QUESTIONS for upcoming standup.
-For EACH person from PREVIOUS days:
-**Name** (Role) — Trust: X
-- Last Update: [from most recent mn/en]
-- Promises vs Delivery: [mn plans vs en results, flag unfinished]
-- Ask: [2 targeted questions referencing their specific work]
-- Flag: [ONLY if trust<80, ghost=true, fake=true, or pattern of non-delivery]
-End with top 3 priorities. ${KEY_REF}`,
+        morning_prep: `You prepare a Delivery Lead for their 10AM MORNING STANDUP. Use ONLY the provided data — never assume or fabricate work items.
 
-        evening_prep: `Prepare Delivery Lead for 6:30 PM EVENING UPDATE. For EACH person present today:
-**Name** — Committed: [from today's mn]
-- Verify: [specific tasks to check from their morning notes]
-- Ask: [1 follow-up]
-Skip absent_* only. NR evening = haven't submitted yet. ${KEY_REF}`,
+${KEY_REF}
+Additional data keys: att={p:present days, e:evening submissions, total:days tracked, ghosts/fakes/lates if >0}, pending=[{d:date, task:unfulfilled morning promise}], absences=[{d:date, type:status, note:reason}], lastWork={d:date, mn/en:last work notes}, days=[7-day record history].
+
+RESPOND WITH THIS EXACT STRUCTURE:
+
+## 📋 Quick Status Board
+| Name | Today | Trust | Present (7d) | Flag |
+Show EVERY member. Today = their morning status from today's record in days array, or "⏳ Not recorded" if no record for today.
+
+## 👥 Per-Person Standup Briefing
+Cover EVERY member — present AND absent, no exceptions.
+
+### **Name** (Role) — Trust: X/100 | Present X/Y days
+- **Today:** [morning status from today's record, or "Not yet recorded"]
+- **Yesterday:** [what they did — from yesterday's mn/en notes in days array. If absent, say so with reason]
+- **Last Work Context:** [QUOTE their most recent work notes from lastWork field — what specific tasks/projects were they on]
+- **Promises vs Delivery:** [from days array: compare recent mn (morning plan) → en (evening result). Flag undelivered with DATES. Use pending field for known gaps]
+- **🎯 Ask Them:**
+  1. [Specific question referencing their ACTUAL work/tasks from notes — not generic]
+  2. [Follow-up about deliverables, blockers, or what they'll work on today]
+- **⚠️ Flags:** [ONLY if real issues: trust<80, ghost promises, fake excuses, consecutive absences, non-delivery pattern. If none, write "✅ Clean"]
+
+**FOR ABSENT MEMBERS additionally include:**
+- **Absent Since:** [date + reason from absences field]
+- **Was Working On:** [their last work notes before absence — from lastWork field]
+- **When They Return:** [specific follow-up question about their unfinished work]
+
+## 🎯 Top 3 Priorities for This Standup
+[Based on data: deliverables due, blocked items, returning members, accountability gaps]
+
+## 🚨 Red Flags
+[Team-level concerns needing immediate attention. If none, say "None — team tracking well."]
+
+CRITICAL RULES:
+- Before 10AM = standup hasn't happened. Do NOT say anyone "missed today's standup"
+- QUOTE actual notes/tasks from the data — do NOT make up work items
+- NR = No Response status, not on leave
+- ghost=true = they promised but didn't deliver
+- Every team member must appear in the output — zero exceptions`,
+
+        evening_prep: `You prepare a Delivery Lead for their 6:30PM EVENING UPDATE. Use ONLY the provided data — never assume or fabricate work items.
+
+${KEY_REF}
+Additional data keys: att={p:present days, e:evening submissions, total:days tracked}, pending=[{d:date, task:unfulfilled promise}], absences=[{d:date, type:status, note:reason}], lastWork={d:date, mn/en:last work notes}, days=[7-day record history].
+
+RESPOND WITH THIS EXACT STRUCTURE:
+
+## 📊 Evening Status Dashboard
+| Name | Morning Status | Evening Submitted? | Action |
+Show EVERY member.
+
+## 👥 Per-Person Evening Briefing
+Cover EVERY member — present AND absent.
+
+### FOR PRESENT MEMBERS:
+### **Name** (Role) — Trust: X/100
+- **Morning Commitment:** [QUOTE their EXACT morning notes (mn) from today's record in days array — what they said they'd do]
+- **Evening Status:** [Submitted with notes / Submitted no notes / Not yet submitted]
+- **Evening Report:** [QUOTE their evening notes (en) from today if available]
+- **✅ Verify These Deliverables:**
+  1. [Specific task FROM their morning notes to check completion]
+  2. [Another specific task to verify]
+- **Promise vs Reality:** [Compare today's mn → en. What was promised? What was delivered? What's missing?]
+- **📋 Pending from Earlier:** [From pending field: previous unfulfilled promises with dates]
+- **Ask:** [1-2 specific verification questions about their actual tasks]
+
+### FOR ABSENT MEMBERS:
+### **Name** — Absent: [reason from today's status]
+- **Last Present:** [date from lastWork or most recent present day in days array]
+- **Was Working On:** [QUOTE their last work notes — specific tasks/projects from lastWork field]
+- **Blocked By Absence:** [any pending items affected]
+- **When They Return:** [continuity question about their unfinished work]
+
+## ✅ Accountability Summary
+- **Delivered on promises:** [names who matched mn→en]
+- **Gaps in delivery:** [names + what specifically wasn't delivered]
+- **No evening update yet:** [names — may need a reminder]
+
+## 🔔 Concerns & Action Items
+[Patterns, blockers, follow-ups needed. If none, say "Team on track."]
+
+CRITICAL RULES:
+- Cover ALL members — present AND absent. Zero exceptions
+- NR in evening = haven't submitted update yet, NOT absent
+- QUOTE actual morning notes as "commitments" — do NOT fabricate tasks
+- Compare mn → en for promise vs delivery accuracy
+- ghost=true = they promised but didn't deliver
+- If someone was absent, always include what they were last working on`,
 
         friday_review: `FRIDAY WEEKLY REVIEW. Cover ALL members.
 Per person: **Name** — Rating: [Excellent/Good/Needs Attention/Concerning]
@@ -109,8 +184,8 @@ ${KEY_REF}`
 
     const userPrompt = `${question}\n\nDATA:\n${teamDataStr}`;
 
-    // Adaptive max tokens: large reports get more, quick queries get less
-    const outputTokens = ['monthly_report', 'friday_review', 'best_performer'].includes(mode) ? 8192 : ['morning_prep', 'team_summary', 'concerns'].includes(mode) ? 6144 : 4096;
+    // Adaptive max tokens: standup prep and large reports get more, quick queries get less
+    const outputTokens = ['monthly_report', 'friday_review', 'best_performer', 'morning_prep', 'evening_prep'].includes(mode) ? 8192 : ['team_summary', 'concerns'].includes(mode) ? 6144 : 4096;
 
     try {
         let response, text;

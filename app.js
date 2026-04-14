@@ -3201,6 +3201,129 @@ async function buildEmployeeDataForAI(employeeId, daysBack = 14) {
     };
 }
 
+// Build rich standup-specific data — 7 days history, ALL employees (present + absent),
+// pre-computed insights (pending promises, absences, last work context, attendance stats)
+async function buildStandupDataForAI() {
+    const employees = await db.employees.toArray();
+    const today = formatDate(new Date());
+    const todayDate = new Date();
+
+    // 7 days back for full context
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 7);
+    const cutoffStr = formatDate(cutoff);
+
+    // Last working day (skip weekends)
+    const lwdDate = new Date();
+    lwdDate.setDate(lwdDate.getDate() - 1);
+    while (lwdDate.getDay() === 0 || lwdDate.getDay() === 6) lwdDate.setDate(lwdDate.getDate() - 1);
+    const lastWorkDay = formatDate(lwdDate);
+
+    const allRecords = await db.attendance_records
+        .filter(r => r.date >= cutoffStr)
+        .toArray();
+
+    const abbr = (s) => STATUS_CONFIG[s]?.abbr || undefined;
+    const trimNote = (n, max = 350) => {
+        if (!n) return undefined;
+        const t = n.trim();
+        return t ? (t.length > max ? t.slice(0, max) + '...' : t) : undefined;
+    };
+    const PRESENT_STATUSES = ['present_active', 'present_async', 'present_late', 'remote_chat_only', 'remote_async_deferred'];
+    const activeEmployees = employees.filter(e => e.is_active && !e.standup_exempt);
+
+    return {
+        today,
+        lastWorkDay,
+        dayOfWeek: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][todayDate.getDay()],
+        manager: AppState.settings.manager_name || 'Manager',
+        teamSize: activeEmployees.length,
+        employees: activeEmployees.map(emp => {
+            const recs = allRecords
+                .filter(r => r.employee_id === emp.id)
+                .sort((a, b) => b.date.localeCompare(a.date));
+
+            // Attendance stats
+            let present = 0, eveningSub = 0, ghosts = 0, fakes = 0, lates = 0;
+            recs.forEach(r => {
+                const ms = r.morning?.status || '';
+                if (PRESENT_STATUSES.includes(ms)) present++;
+                if (r.evening?.status && !isFullDayAbsentStatus(ms)) eveningSub++;
+                if (ms === 'present_ghost') ghosts++;
+                if (ms === 'absent_fake_excuse') fakes++;
+                if (ms === 'present_late') lates++;
+            });
+
+            // Pending items — morning promises without evening delivery
+            const pending = [];
+            for (const r of recs) {
+                const mn = r.morning?.notes?.trim();
+                const en = r.evening?.notes?.trim();
+                if (mn && !en && PRESENT_STATUSES.includes(r.morning?.status)) {
+                    pending.push({ d: r.date, task: trimNote(mn, 200) });
+                }
+                if (pending.length >= 3) break;
+            }
+
+            // Recent absences with reasons
+            const absences = [];
+            recs.forEach(r => {
+                const ms = r.morning?.status || '';
+                if (isFullDayAbsentStatus(ms) || ms === 'informed_valid') {
+                    const obj = { d: r.date, type: abbr(ms) };
+                    const note = trimNote(r.morning?.notes, 100);
+                    if (note) obj.note = note;
+                    absences.push(obj);
+                }
+            });
+
+            // Last work context — most recent day with actual work notes
+            let lastWork = null;
+            for (const r of recs) {
+                const mn = r.morning?.notes?.trim();
+                const en = r.evening?.notes?.trim();
+                if (mn || en) {
+                    lastWork = { d: r.date };
+                    if (mn) lastWork.mn = trimNote(mn, 250);
+                    if (en) lastWork.en = trimNote(en, 250);
+                    break;
+                }
+            }
+
+            const result = {
+                name: emp.full_name,
+                role: emp.role || undefined,
+                team: emp.team || undefined,
+                trust: emp.trust_score,
+                att: { p: present, e: eveningSub, total: recs.length }
+            };
+            if (ghosts) result.att.ghosts = ghosts;
+            if (fakes) result.att.fakes = fakes;
+            if (lates) result.att.lates = lates;
+            if (pending.length) result.pending = pending;
+            if (absences.length) result.absences = absences;
+            if (lastWork) result.lastWork = lastWork;
+
+            // Full 7-day records with generous notes
+            result.days = recs.map(r => {
+                const rec = { d: r.date };
+                if (r.morning?.status) rec.ms = abbr(r.morning.status);
+                if (r.evening?.status) rec.es = abbr(r.evening.status);
+                const mn = trimNote(r.morning?.notes);
+                if (mn) rec.mn = mn;
+                const en = trimNote(r.evening?.notes);
+                if (en) rec.en = en;
+                if (r.morning?.response_lag_minutes > 0) rec.lag = r.morning.response_lag_minutes;
+                if (r.morning?.status === 'present_ghost') rec.ghost = true;
+                if (r.morning?.status === 'absent_fake_excuse') rec.fake = true;
+                return rec;
+            });
+
+            return result;
+        })
+    };
+}
+
 // Send query to AI chat endpoint
 async function askAI(question, teamData, mode = 'chat') {
     const aiConfig = await getAIConfig();
@@ -3482,16 +3605,31 @@ async function handleMorningPrep() {
     const loadingCard = addAIResponse('Morning Standup Prep (10 AM)', 'sunrise', '', true);
 
     try {
-        const teamData = await buildTeamDataForAI(7);
-        const hasData = teamData.employees.some(e => e.records.length > 0);
+        const teamData = await buildStandupDataForAI();
+        const hasData = teamData.employees.some(e => e.days && e.days.length > 0);
         if (!hasData) {
             loadingCard.remove();
             addAIResponse('Morning Standup Prep (10 AM)', 'sunrise', 'No attendance data recorded yet. Start tracking on the Dashboard first, then come back for AI-powered prep.');
             return;
         }
-        const today = formatDate(new Date());
         const currentTime = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
-        const question = `Prepare me for today's 10 AM standup. TODAY is ${today}, current time is ${currentTime}. The standup has NOT happened yet — do NOT say anyone missed today's standup. Cover ALL ${teamData.employees.length} team members. Use their PREVIOUS days' notes to generate specific follow-up questions. Track what they PROMISED to do vs what they actually DELIVERED.`;
+        const question = `Prepare me for today's 10 AM standup meeting.
+TODAY: ${teamData.today} (${teamData.dayOfWeek}), Time: ${currentTime}, Team: ${teamData.teamSize} members.
+Last working day was: ${teamData.lastWorkDay}.
+
+REQUIREMENTS:
+- The standup has NOT happened yet (if before 10 AM) — prepare me with QUESTIONS to ask, don't say anyone missed today
+- Cover EVERY team member — present, absent, or not yet marked. Zero exceptions.
+- For each person, use their actual work notes (mn/en) to ask questions about THEIR specific tasks
+- For absent people, include what they were last working on so I know context when they return
+- Flag undelivered promises from "pending" field — these are morning commitments with no evening delivery
+- "att" field = pre-computed attendance: p=present days, e=evening submissions, total=days in data
+
+Pre-computed fields per person:
+- lastWork: most recent day with work notes (what they were last doing)
+- pending: morning promises that were never closed with evening delivery
+- absences: recent absence dates and reasons
+- days: full 7-day record history with morning/evening status and notes`;
         const response = await askAI(question, teamData, 'morning_prep');
         loadingCard.remove();
         addAIResponse('Morning Standup Prep (10 AM)', 'sunrise', response || 'No response');
@@ -3505,16 +3643,30 @@ async function handleEveningPrep() {
     const loadingCard = addAIResponse('Evening Update Prep (6:30 PM)', 'sunset', '', true);
 
     try {
-        const teamData = await buildTeamDataForAI(3);
-        const hasData = teamData.employees.some(e => e.records.length > 0);
+        const teamData = await buildStandupDataForAI();
+        const hasData = teamData.employees.some(e => e.days && e.days.length > 0);
         if (!hasData) {
             loadingCard.remove();
             addAIResponse('Evening Update Prep (6:30 PM)', 'sunset', 'No attendance data recorded yet. Start tracking on the Dashboard first.');
             return;
         }
-        const today = formatDate(new Date());
         const currentTime = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
-        const question = `Prepare me for today's 6:30 PM evening update. TODAY is ${today}, current time is ${currentTime}. Cover ALL present team members. For each person, show what they COMMITTED to this morning (from their mn notes) and what specific tasks I should verify they completed.`;
+        const question = `Prepare me for today's 6:30 PM evening update meeting.
+TODAY: ${teamData.today} (${teamData.dayOfWeek}), Time: ${currentTime}, Team: ${teamData.teamSize} members.
+
+REQUIREMENTS:
+- Cover EVERY team member — present AND absent, not just who showed up today. Zero exceptions.
+- For present members: show what they COMMITTED to this morning (today's mn notes) and what I should VERIFY they completed
+- For absent members: show what they were last working on so I can track continuity when they return
+- If someone has no evening update yet, flag it — but NR evening ≠ absent (they just haven't submitted yet)
+- Check "pending" field for unfulfilled promises from PREVIOUS days
+- "att" field = pre-computed attendance: p=present days, e=evening submissions, total=days in data
+
+Pre-computed fields per person:
+- lastWork: most recent day with work notes (what they were last doing)
+- pending: morning promises that were never closed with evening delivery
+- absences: recent absence dates and reasons
+- days: full 7-day record history with morning/evening status and notes`;
         const response = await askAI(question, teamData, 'evening_prep');
         loadingCard.remove();
         addAIResponse('Evening Update Prep (6:30 PM)', 'sunset', response || 'No response');
