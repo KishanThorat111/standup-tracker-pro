@@ -10,9 +10,13 @@ module.exports = async function handler(req, res) {
         return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const { apiKey: clientKey, question, teamData, mode, provider: clientProvider, azureEndpoint, azureDeployment, azureApiVersion } = req.body || {};
+    const { apiKey: clientKey, question, teamData, mode, provider: clientProvider, azureEndpoint, azureDeployment, azureApiVersion, openaiModel } = req.body || {};
     const provider = clientProvider || 'gemini';
-    const apiKey = clientKey || (provider === 'gemini' ? process.env.GEMINI_API_KEY : process.env.AZURE_OPENAI_KEY);
+    const apiKey = clientKey || (
+        provider === 'gemini' ? process.env.GEMINI_API_KEY :
+        provider === 'openai' ? process.env.OPENAI_API_KEY :
+        process.env.AZURE_OPENAI_KEY
+    );
 
     if (!apiKey || !question) {
         return res.status(400).json({ error: 'API key and question are required' });
@@ -181,8 +185,38 @@ RULES: Rank ALL employees. Use actual data. Evaluate note quality and work deliv
     try {
         let response, text;
 
-        if (provider === 'azure_openai') {
-            // Azure OpenAI
+        if (provider === 'openai') {
+            const model = openaiModel || 'gpt-4o-mini';
+            response = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey}`
+                },
+                body: JSON.stringify({
+                    model,
+                    messages: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: userPrompt }
+                    ],
+                    temperature: 0.7,
+                    max_tokens: 16384
+                })
+            });
+
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                const status = response.status;
+                const msg = err.error?.message || 'OpenAI API error';
+                if (status === 401) return res.status(401).json({ error: 'Invalid OpenAI API key. Please check your key in Settings.' });
+                if (status === 429) return res.status(429).json({ error: 'OpenAI rate limit reached. Please wait a moment and try again.' });
+                if (status === 402) return res.status(402).json({ error: 'OpenAI billing issue. Please check your account at platform.openai.com.' });
+                return res.status(status).json({ error: msg });
+            }
+
+            const data = await response.json();
+            text = data.choices?.[0]?.message?.content || 'No response generated';
+        } else if (provider === 'azure_openai') {
             if (!azureEndpoint || !azureDeployment) {
                 return res.status(400).json({ error: 'Azure endpoint and deployment name are required' });
             }

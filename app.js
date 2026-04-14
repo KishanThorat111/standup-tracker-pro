@@ -2562,12 +2562,21 @@ async function getAIConfig() {
             azureApiVersion: settings?.azure_api_version || '2024-06-01'
         };
     }
+    if (provider === 'openai') {
+        return {
+            provider,
+            apiKey: settings?.openai_api_key || '',
+            openaiModel: settings?.openai_model || 'gpt-4o-mini'
+        };
+    }
     return { provider, apiKey: settings?.gemini_api_key || '' };
 }
 
 function getAIProviderLabel() {
     const provider = AppState.settings?.ai_provider || 'gemini';
-    return provider === 'azure_openai' ? 'Azure OpenAI' : 'Gemini';
+    if (provider === 'azure_openai') return 'Azure OpenAI';
+    if (provider === 'openai') return 'OpenAI';
+    return 'Gemini';
 }
 
 async function analyzeWithGemini(employeeId) {
@@ -2591,19 +2600,46 @@ async function analyzeWithGemini(employeeId) {
 
     records.sort((a, b) => b.date.localeCompare(a.date));
 
+    // Count absences by type
+    let absentCount = 0, ghostCount = 0, fakeCount = 0, lateCount = 0, leaveCount = 0;
+    records.forEach(r => {
+        const ms = r.morning?.status || '';
+        if (ms.includes('absent') || ms === 'informed_valid' || ms === 'on_leave') absentCount++;
+        if (ms === 'present_ghost') ghostCount++;
+        if (ms === 'absent_fake_excuse') fakeCount++;
+        if (ms === 'present_late') lateCount++;
+        if (ms === 'on_leave') leaveCount++;
+    });
+
     const employeeData = {
         name: employee.full_name,
         role: employee.role,
         team: employee.team,
+        email: employee.email || '',
         trust_score: employee.trust_score,
         total_days_tracked: records.length,
+        summary_stats: {
+            total_absences: absentCount,
+            ghost_promises: ghostCount,
+            fake_excuses: fakeCount,
+            late_arrivals: lateCount,
+            leaves_taken: leaveCount
+        },
         records: records.map(r => ({
             date: r.date,
             morning_status: STATUS_CONFIG[r.morning?.status]?.label || 'Not recorded',
             morning_notes: r.morning?.notes || '',
+            morning_async: r.morning?.async_content || '',
             evening_status: STATUS_CONFIG[r.evening?.status]?.label || 'Not recorded',
             evening_notes: r.evening?.notes || '',
-            lag_minutes: r.morning?.response_lag_minutes || 0
+            evening_async: r.evening?.async_content || '',
+            lag_minutes: r.morning?.response_lag_minutes || 0,
+            ghost_promise: r.morning?.status === 'present_ghost' ? {
+                fulfilled: r.morning?.ghost_promise?.fulfilled || false,
+                lag_hours: r.morning?.ghost_promise?.lag_hours || 0
+            } : undefined,
+            verification: r.morning?.verification_status || undefined,
+            absence_reason: (r.morning?.status?.includes('absent') || r.morning?.status === 'informed_valid' || r.morning?.status === 'on_leave') ? (r.morning?.notes || 'Not mentioned') : undefined
         }))
     };
 
@@ -2617,6 +2653,449 @@ async function analyzeWithGemini(employeeId) {
         showToast('AI analysis failed: ' + err.message, 'error');
         return null;
     }
+}
+
+// ============================================
+// INDIVIDUAL EMPLOYEE PDF REPORT
+// ============================================
+
+async function generateIndividualPDF(employeeId) {
+    const employee = await db.employees.get(employeeId);
+    if (!employee) { showToast('Employee not found', 'error'); return; }
+
+    const allRecords = await db.attendance_records
+        .where('employee_id')
+        .equals(employeeId)
+        .toArray();
+    allRecords.sort((a, b) => a.date.localeCompare(b.date));
+
+    if (allRecords.length === 0) {
+        showToast('No attendance records found for this employee', 'warning');
+        return;
+    }
+
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+
+    const statusLabel = (s) => STATUS_CONFIG[s]?.label || s || 'No Response';
+    const statusAbbr = (s) => STATUS_CONFIG[s]?.abbr || '-';
+    const todayStr = formatDate(new Date());
+
+    // Holidays for working day calculation
+    const holidays = await db.holidays.toArray();
+    const holidayDates = new Set(holidays.map(h => h.date));
+
+    const firstDate = allRecords[0].date;
+    const lastDate = allRecords[allRecords.length - 1].date;
+
+    // Count working days in range
+    let workingDays = 0;
+    {
+        let d = new Date(firstDate + 'T00:00:00');
+        const dEnd = new Date(lastDate + 'T00:00:00');
+        while (d <= dEnd) {
+            const ds = formatDate(d);
+            const day = d.getDay();
+            if (day !== 0 && day !== 6 && !holidayDates.has(ds)) workingDays++;
+            d.setDate(d.getDate() + 1);
+        }
+    }
+    if (workingDays === 0) workingDays = allRecords.length;
+
+    // Calculate comprehensive stats
+    const PARTICIPATED = ['present_active', 'present_async', 'present_late', 'remote_chat_only', 'remote_async_deferred'];
+    let morningPresent = 0, eveningSubmitted = 0, ghostCount = 0, fakeCount = 0, lateCount = 0;
+    let absentCount = 0, noInternetCount = 0, noResponseCount = 0, informedValidCount = 0, onLeaveCount = 0;
+    let totalLag = 0, lagEntries = 0;
+    let asyncCount = 0, chatOnlyCount = 0;
+    const absenceReasons = [];
+    const workNotes = [];
+    const monthlyBreakdown = {};
+
+    allRecords.forEach(r => {
+        const ms = r.morning?.status || '';
+        const es = r.evening?.status || '';
+
+        if (PARTICIPATED.includes(ms)) morningPresent++;
+        if (ms === 'present_ghost' || es === 'present_ghost') ghostCount++;
+        if (ms === 'absent_fake_excuse' || es === 'absent_fake_excuse') fakeCount++;
+        if (ms === 'present_late') lateCount++;
+        if (ms === 'present_async') asyncCount++;
+        if (ms === 'remote_chat_only') chatOnlyCount++;
+        if (ms === 'absent_no_internet') noInternetCount++;
+        if (ms === 'absent_no_response') noResponseCount++;
+        if (ms === 'informed_valid') informedValidCount++;
+        if (ms === 'on_leave') onLeaveCount++;
+        if (ms.includes('absent') || ms === 'informed_valid' || ms === 'on_leave') absentCount++;
+
+        if (PARTICIPATED.includes(es) || (es && !isFullDayAbsentStatus(ms))) {
+            if (es && es !== 'absent_no_response' && !isFullDayAbsentStatus(ms)) eveningSubmitted++;
+        }
+
+        ['morning', 'evening'].forEach(s => {
+            const lag = r[s]?.response_lag_minutes;
+            if (lag > 0 && lag <= 480) { totalLag += lag; lagEntries++; }
+        });
+
+        // Collect absence reasons
+        if (ms.includes('absent') || ms === 'informed_valid' || ms === 'on_leave') {
+            absenceReasons.push({
+                date: r.date,
+                status: statusLabel(ms),
+                reason: r.morning?.notes?.trim() || 'Not mentioned',
+                verification: r.morning?.verification_status || 'unverified'
+            });
+        }
+
+        // Collect work notes
+        const mNotes = r.morning?.notes?.trim();
+        const eNotes = r.evening?.notes?.trim();
+        const mAsync = r.morning?.async_content?.trim();
+        const eAsync = r.evening?.async_content?.trim();
+        if (mNotes || eNotes || mAsync || eAsync) {
+            workNotes.push({ date: r.date, morning: mNotes || '', evening: eNotes || '', morningAsync: mAsync || '', eveningAsync: eAsync || '' });
+        }
+
+        // Monthly grouping
+        const monthKey = r.date.slice(0, 7);
+        if (!monthlyBreakdown[monthKey]) monthlyBreakdown[monthKey] = { present: 0, absent: 0, ghost: 0, late: 0, total: 0 };
+        monthlyBreakdown[monthKey].total++;
+        if (PARTICIPATED.includes(ms)) monthlyBreakdown[monthKey].present++;
+        if (ms.includes('absent') || ms === 'informed_valid' || ms === 'on_leave') monthlyBreakdown[monthKey].absent++;
+        if (ms === 'present_ghost') monthlyBreakdown[monthKey].ghost++;
+        if (ms === 'present_late') monthlyBreakdown[monthKey].late++;
+    });
+
+    const avgLag = lagEntries > 0 ? Math.round(totalLag / lagEntries) : 0;
+    const attendanceRate = workingDays > 0 ? Math.round((morningPresent / workingDays) * 100) : 0;
+    const eveningRate = workingDays > 0 ? Math.round((eveningSubmitted / workingDays) * 100) : 0;
+
+    // --- COVER PAGE ---
+    doc.setFillColor(45, 55, 72);
+    doc.rect(0, 0, pageWidth, 85, 'F');
+    doc.setFillColor(107, 142, 155);
+    doc.rect(0, 85, pageWidth, 3, 'F');
+
+    doc.setFontSize(28);
+    doc.setTextColor(255, 255, 255);
+    doc.text('Individual Performance Report', pageWidth / 2, 32, { align: 'center' });
+
+    doc.setFontSize(18);
+    doc.setTextColor(212, 163, 115);
+    doc.text(employee.full_name, pageWidth / 2, 52, { align: 'center' });
+
+    doc.setFontSize(11);
+    doc.setTextColor(200, 210, 220);
+    doc.text(`${employee.role || 'No role'}  |  Team: ${employee.team || 'No team'}`, pageWidth / 2, 66, { align: 'center' });
+
+    doc.setFontSize(10);
+    doc.setTextColor(180, 190, 200);
+    doc.text(`Tracking Period: ${firstDate} to ${lastDate}`, pageWidth / 2, 78, { align: 'center' });
+
+    // Info cards
+    const infoY = 105;
+    const cardW = 55;
+    const gap = 8;
+    const startX = (pageWidth - (cardW * 3 + gap * 2)) / 2;
+
+    for (let i = 0; i < 3; i++) {
+        doc.setFillColor(245, 243, 240);
+        doc.roundedRect(startX + i * (cardW + gap), infoY, cardW, 40, 3, 3, 'F');
+    }
+    for (let i = 0; i < 3; i++) {
+        doc.setFillColor(245, 243, 240);
+        doc.roundedRect(startX + i * (cardW + gap), infoY + 50, cardW, 40, 3, 3, 'F');
+    }
+
+    const cards = [
+        { label: 'Attendance Rate', value: `${attendanceRate}%` },
+        { label: 'Trust Score', value: `${employee.trust_score || 100}/100` },
+        { label: 'Total Days Tracked', value: `${allRecords.length}` },
+        { label: 'Working Days', value: `${workingDays}` },
+        { label: 'Absences / Leaves', value: `${absentCount}` },
+        { label: 'Ghost Promises', value: `${ghostCount}` }
+    ];
+
+    cards.forEach((card, i) => {
+        const row = Math.floor(i / 3);
+        const col = i % 3;
+        const cx = startX + col * (cardW + gap) + cardW / 2;
+        const cy = infoY + row * 50;
+        doc.setFontSize(8);
+        doc.setTextColor(130);
+        doc.text(card.label, cx, cy + 12, { align: 'center' });
+        doc.setFontSize(16);
+        doc.setTextColor(45, 55, 72);
+        doc.text(card.value, cx, cy + 28, { align: 'center' });
+    });
+
+    // Contact info
+    const contactParts = [];
+    if (employee.email) contactParts.push(`Email: ${employee.email}`);
+    if (employee.slack_handle) contactParts.push(`Slack: ${employee.slack_handle}`);
+    if (contactParts.length) {
+        doc.setFontSize(8);
+        doc.setTextColor(150);
+        doc.text(contactParts.join('   |   '), pageWidth / 2, infoY + 100, { align: 'center' });
+    }
+
+    doc.setFontSize(8);
+    doc.setTextColor(160);
+    doc.text(`Generated: ${new Date().toLocaleString('en-IN')}`, pageWidth / 2, pageHeight - 15, { align: 'center' });
+    doc.text('Standup Tracker Pro — Individual Report', pageWidth / 2, pageHeight - 8, { align: 'center' });
+
+    // --- PAGE 2: DETAILED STATISTICS ---
+    doc.addPage();
+    doc.setFontSize(16);
+    doc.setTextColor(45, 55, 72);
+    doc.text('Detailed Statistics', 14, 20);
+
+    const eveningDenom = workingDays - (allRecords.find(r => r.date === todayStr) && new Date().getHours() < 18 ? 1 : 0);
+
+    const statsData = [
+        ['Tracking Period', `${firstDate} to ${lastDate}`],
+        ['Total Working Days', `${workingDays}`],
+        ['Days With Records', `${allRecords.length}`],
+        ['Morning Attendance Rate', `${morningPresent}/${workingDays} (${attendanceRate}%)`],
+        ['Evening Update Rate', `${eveningSubmitted}/${eveningDenom > 0 ? eveningDenom : workingDays} (${eveningDenom > 0 ? Math.round(eveningSubmitted / eveningDenom * 100) : eveningRate}%)`],
+        ['Average Response Lag', avgLag > 0 ? `${Math.floor(avgLag / 60) > 0 ? Math.floor(avgLag / 60) + 'h ' : ''}${avgLag % 60}m` : 'On time'],
+        ['Trust Score', `${employee.trust_score || 100}/100`],
+        ['', ''],
+        ['ATTENDANCE BREAKDOWN', ''],
+        ['Present Active', `${allRecords.filter(r => r.morning?.status === 'present_active').length}`],
+        ['Present Async', `${asyncCount}`],
+        ['Present Late', `${lateCount}`],
+        ['Chat Only', `${chatOnlyCount}`],
+        ['Ghost Promises', `${ghostCount}`],
+        ['Fake Excuses', `${fakeCount}`],
+        ['No Response Days', `${noResponseCount}`],
+        ['No Internet Claims', `${noInternetCount}`],
+        ['Informed Valid Absences', `${informedValidCount}`],
+        ['On Leave (Approved)', `${onLeaveCount}`],
+        ['', ''],
+        ['VERIFICATION SUMMARY', ''],
+        ['Verified Legitimate', `${allRecords.filter(r => r.morning?.verification_status === 'verified_legit' || r.evening?.verification_status === 'verified_legit').length}`],
+        ['Verified Fake', `${allRecords.filter(r => r.morning?.verification_status === 'verified_fake' || r.evening?.verification_status === 'verified_fake').length}`],
+        ['Pending Verification', `${allRecords.filter(r => (r.morning?.status?.startsWith('absent_') && r.morning?.verification_status === 'unverified') || (r.evening?.status?.startsWith('absent_') && r.evening?.verification_status === 'unverified')).length}`]
+    ];
+
+    doc.autoTable({
+        startY: 28,
+        body: statsData,
+        styles: { fontSize: 8.5, cellPadding: 3.5 },
+        columnStyles: {
+            0: { fontStyle: 'bold', cellWidth: 60, textColor: [45, 55, 72] },
+            1: { cellWidth: 70 }
+        },
+        tableWidth: 130,
+        didParseCell: function(data) {
+            if (data.section === 'body') {
+                const val = data.row.raw[0] || '';
+                if (val === 'ATTENDANCE BREAKDOWN' || val === 'VERIFICATION SUMMARY') {
+                    data.cell.styles.fillColor = [45, 55, 72];
+                    data.cell.styles.textColor = [255, 255, 255];
+                    data.cell.styles.fontSize = 9;
+                }
+                if (val === '') { data.cell.styles.minCellHeight = 4; data.cell.styles.cellPadding = 1; }
+            }
+        }
+    });
+
+    // --- PAGE 3: MONTHLY BREAKDOWN ---
+    const monthKeys = Object.keys(monthlyBreakdown).sort();
+    if (monthKeys.length > 0) {
+        doc.addPage();
+        doc.setFontSize(16);
+        doc.setTextColor(45, 55, 72);
+        doc.text('Monthly Performance Breakdown', 14, 20);
+
+        const monthData = monthKeys.map(k => {
+            const m = monthlyBreakdown[k];
+            const pct = m.total > 0 ? Math.round((m.present / m.total) * 100) : 0;
+            const monthName = new Date(k + '-01').toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+            return [monthName, `${m.total}`, `${m.present}`, `${m.absent}`, `${m.ghost}`, `${m.late}`, `${pct}%`];
+        });
+
+        doc.autoTable({
+            startY: 28,
+            head: [['Month', 'Total Days', 'Present', 'Absent/Leave', 'Ghosts', 'Late', 'Attendance %']],
+            body: monthData,
+            styles: { fontSize: 8.5, cellPadding: 3.5 },
+            headStyles: { fillColor: [107, 142, 155], textColor: 255 },
+            columnStyles: {
+                0: { fontStyle: 'bold', cellWidth: 40 },
+                6: { fontStyle: 'bold' }
+            },
+            didParseCell: function(data) {
+                if (data.section === 'body' && data.column.index === 6) {
+                    const pct = parseInt(data.cell.raw);
+                    if (pct >= 80) data.cell.styles.textColor = [124, 154, 107];
+                    else if (pct >= 60) data.cell.styles.textColor = [212, 163, 115];
+                    else data.cell.styles.textColor = [160, 82, 77];
+                }
+            }
+        });
+    }
+
+    // --- ABSENCE & LEAVE DETAILS ---
+    if (absenceReasons.length > 0) {
+        const startY = doc.lastAutoTable ? doc.lastAutoTable.finalY + 12 : 28;
+        if (startY > pageHeight - 60) doc.addPage();
+
+        doc.setFontSize(14);
+        doc.setTextColor(45, 55, 72);
+        doc.text('Absence & Leave Details', 14, doc.lastAutoTable && doc.lastAutoTable.finalY + 12 > pageHeight - 60 ? 20 : doc.lastAutoTable.finalY + 12);
+
+        const absenceData = absenceReasons.map(a => {
+            const verifyLabel = a.verification === 'verified_legit' ? 'Legitimate' : a.verification === 'verified_fake' ? 'FAKE' : 'Pending';
+            return [a.date, a.status, a.reason, verifyLabel];
+        });
+
+        doc.autoTable({
+            startY: (doc.lastAutoTable && doc.lastAutoTable.finalY + 18 > pageHeight - 60 ? 28 : doc.lastAutoTable.finalY + 18),
+            head: [['Date', 'Status', 'Reason Given', 'Verification']],
+            body: absenceData,
+            styles: { fontSize: 7.5, cellPadding: 3, overflow: 'linebreak' },
+            headStyles: { fillColor: [160, 82, 77], textColor: 255 },
+            columnStyles: {
+                0: { cellWidth: 22, fontStyle: 'bold' },
+                1: { cellWidth: 30 },
+                2: { cellWidth: 80 },
+                3: { cellWidth: 25 }
+            },
+            didParseCell: function(data) {
+                if (data.section === 'body' && data.column.index === 3) {
+                    const val = data.cell.raw || '';
+                    if (val === 'FAKE') data.cell.styles.textColor = [160, 82, 77];
+                    else if (val === 'Pending') data.cell.styles.textColor = [212, 163, 115];
+                    else if (val === 'Legitimate') data.cell.styles.textColor = [124, 154, 107];
+                }
+            }
+        });
+    }
+
+    // --- DAILY STANDUP LOG ---
+    doc.addPage();
+    doc.setFontSize(16);
+    doc.setTextColor(45, 55, 72);
+    doc.text('Complete Standup Log', 14, 20);
+    doc.setFontSize(9);
+    doc.setTextColor(120);
+    doc.text('Every morning & evening standup entry with full notes, status, and verification details.', 14, 28);
+
+    const sessionDetail = (session, label, dateStr) => {
+        if (!session || !session.status) {
+            if (dateStr === todayStr && label === 'Evening') return 'Pending';
+            return 'No record';
+        }
+        const lines = [];
+        lines.push(`Status: ${statusLabel(session.status)}`);
+        if (session.timestamp) {
+            lines.push(`Time: ${new Date(session.timestamp).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, day: '2-digit', month: 'short' })}`);
+        }
+        if (session.response_lag_minutes > 0) {
+            const lagH = Math.floor(session.response_lag_minutes / 60);
+            const lagM = session.response_lag_minutes % 60;
+            lines.push(`Lag: ${lagH > 0 ? lagH + 'h ' : ''}${lagM}m`);
+        }
+        const reason = session.notes?.trim();
+        lines.push(`Notes: ${reason || 'None'}`);
+        if (session.async_content?.trim()) lines.push(`Async: ${session.async_content.trim()}`);
+        if (session.proof_source && session.proof_source !== 'none') {
+            const sourceLabels = { slack_thread: 'Slack', teams_chat: 'Teams', email: 'Email', ticket_update: 'Ticket' };
+            lines.push(`Proof: ${sourceLabels[session.proof_source] || session.proof_source}`);
+        }
+        const vs = session.verification_status;
+        if (session.status?.startsWith('absent_') || vs === 'verified_legit' || vs === 'verified_fake') {
+            const verifyLabels = { unverified: 'Pending', verified_legit: 'Legit', verified_fake: 'FAKE' };
+            lines.push(`Verify: ${verifyLabels[vs] || 'Pending'}`);
+        }
+        if (session.status === 'present_ghost' && session.ghost_promise) {
+            const gp = session.ghost_promise;
+            lines.push(`Ghost: ${gp.fulfilled ? 'Fulfilled' : 'UNFULFILLED'}, Lag: ${gp.lag_hours || 0}h`);
+        }
+        return lines.join('\n');
+    };
+
+    const dailyData = allRecords.map(r => [
+        r.date,
+        statusAbbr(r.morning?.status),
+        sessionDetail(r.morning, 'Morning', r.date),
+        statusAbbr(r.evening?.status),
+        sessionDetail(r.evening, 'Evening', r.date)
+    ]);
+
+    doc.autoTable({
+        startY: 34,
+        head: [['Date', 'M', 'Morning Details', 'E', 'Evening Details']],
+        body: dailyData,
+        styles: { fontSize: 6.5, cellPadding: 2.5, overflow: 'linebreak', minCellHeight: 12 },
+        headStyles: { fillColor: [45, 55, 72], textColor: 255, fontSize: 7 },
+        columnStyles: {
+            0: { cellWidth: 18, fontStyle: 'bold' },
+            1: { cellWidth: 8, halign: 'center', fontStyle: 'bold' },
+            2: { cellWidth: 70 },
+            3: { cellWidth: 8, halign: 'center', fontStyle: 'bold' },
+            4: { cellWidth: 70 }
+        },
+        didParseCell: function(data) {
+            if (data.section === 'body') {
+                const abbr = data.cell.raw || '';
+                if (data.column.index === 1 || data.column.index === 3) {
+                    if (abbr === 'AG') data.cell.styles.textColor = [193, 123, 116];
+                    else if (abbr === 'FE') data.cell.styles.textColor = [160, 82, 77];
+                    else if (abbr === 'PA' || abbr === 'AA') data.cell.styles.textColor = [124, 154, 107];
+                    else if (abbr === 'PL') data.cell.styles.textColor = [212, 163, 115];
+                }
+            }
+        }
+    });
+
+    // --- WORK CONTENT SUMMARY ---
+    if (workNotes.length > 0) {
+        doc.addPage();
+        doc.setFontSize(16);
+        doc.setTextColor(45, 55, 72);
+        doc.text('Work Content & Standup Notes', 14, 20);
+        doc.setFontSize(9);
+        doc.setTextColor(120);
+        doc.text('What the employee communicated in morning & evening standups across the tracking period.', 14, 28);
+
+        const noteData = workNotes.map(n => {
+            const mContent = [n.morning, n.morningAsync].filter(Boolean).join(' | Async: ') || 'No notes';
+            const eContent = [n.evening, n.eveningAsync].filter(Boolean).join(' | Async: ') || 'No notes';
+            return [n.date, mContent, eContent];
+        });
+
+        doc.autoTable({
+            startY: 34,
+            head: [['Date', 'Morning Notes / Work', 'Evening Notes / Work']],
+            body: noteData,
+            styles: { fontSize: 7, cellPadding: 3, overflow: 'linebreak', minCellHeight: 12 },
+            headStyles: { fillColor: [107, 142, 155], textColor: 255, fontSize: 7.5 },
+            columnStyles: {
+                0: { cellWidth: 20, fontStyle: 'bold' },
+                1: { cellWidth: 80 },
+                2: { cellWidth: 80 }
+            }
+        });
+    }
+
+    // Page numbers
+    const totalPages = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= totalPages; i++) {
+        doc.setPage(i);
+        doc.setFontSize(8);
+        doc.setTextColor(150);
+        doc.text(`Page ${i} of ${totalPages}`, pageWidth - 30, pageHeight - 10);
+        doc.text(`${employee.full_name} — Individual Report`, 14, pageHeight - 10);
+    }
+
+    const safeName = employee.full_name.replace(/[^a-zA-Z0-9]/g, '_');
+    doc.save(`${safeName}-performance-report-${formatDate(new Date())}.pdf`);
+    showToast('Individual PDF report downloaded', 'success');
 }
 
 // ============================================
@@ -3619,25 +4098,42 @@ async function showEmployeeProfile(employeeId) {
             </div>
         </div>
         
-        <!-- AI Analysis -->
-        <div>
-            <button class="ai-analyze-btn btn-primary w-full flex items-center justify-center gap-2">
+        <!-- Actions -->
+        <div class="flex gap-2">
+            <button class="pdf-download-btn btn-secondary flex-1 flex items-center justify-center gap-2 text-sm py-2.5">
+                <i data-lucide="file-text" class="w-4 h-4"></i>
+                Download PDF Report
+            </button>
+            <button class="ai-analyze-btn btn-primary flex-1 flex items-center justify-center gap-2 text-sm py-2.5">
                 <i data-lucide="sparkles" class="w-4 h-4"></i>
                 AI Analysis (${getAIProviderLabel()})
             </button>
-            <div class="ai-result hidden mt-3 bg-cream border border-dusty/30 rounded-lg p-4">
-                <div class="flex items-center gap-2 mb-2">
-                    <i data-lucide="sparkles" class="w-4 h-4 text-action"></i>
-                    <span class="font-medium text-charcoal text-sm">AI Insights</span>
-                </div>
-                <div class="ai-result-text text-sm text-slate whitespace-pre-wrap leading-relaxed"></div>
+        </div>
+        <div class="ai-result hidden mt-3 bg-cream border border-dusty/30 rounded-lg p-4">
+            <div class="flex items-center gap-2 mb-2">
+                <i data-lucide="sparkles" class="w-4 h-4 text-action"></i>
+                <span class="font-medium text-charcoal text-sm">AI Insights</span>
             </div>
+            <div class="ai-result-text text-sm text-slate whitespace-pre-wrap leading-relaxed"></div>
         </div>
     `;
     
     content.querySelector('.edit-profile-btn').addEventListener('click', () => {
         closeModal();
         showEditEmployeeModal(employeeId);
+    });
+
+    content.querySelector('.pdf-download-btn').addEventListener('click', async function() {
+        this.disabled = true;
+        this.innerHTML = '<span class="animate-pulse">Generating PDF...</span>';
+        try {
+            await generateIndividualPDF(employeeId);
+        } catch (err) {
+            showToast('PDF generation failed: ' + err.message, 'error');
+        }
+        this.disabled = false;
+        this.innerHTML = '<i data-lucide="file-text" class="w-4 h-4"></i> Download PDF Report';
+        lucide.createIcons();
     });
 
     content.querySelector('.ai-analyze-btn').addEventListener('click', async function() {
@@ -3670,9 +4166,14 @@ function showSettingsModal() {
     // AI Provider setup
     const providerSelect = content.getElementById('settingAIProvider');
     const geminiFields = content.getElementById('geminiFields');
+    const openaiFields = content.getElementById('openaiFields');
     const azureFields = content.getElementById('azureFields');
     const savedProvider = AppState.settings.ai_provider || 'gemini';
     providerSelect.value = savedProvider;
+
+    // Load OpenAI fields
+    content.getElementById('settingOpenAIKey').value = AppState.settings.openai_api_key || '';
+    content.getElementById('settingOpenAIModel').value = AppState.settings.openai_model || 'gpt-4o-mini';
 
     // Load Azure fields
     content.getElementById('settingAzureEndpoint').value = AppState.settings.azure_endpoint || '';
@@ -3682,6 +4183,7 @@ function showSettingsModal() {
 
     function toggleProviderFields(provider) {
         geminiFields.classList.toggle('hidden', provider !== 'gemini');
+        openaiFields.classList.toggle('hidden', provider !== 'openai');
         azureFields.classList.toggle('hidden', provider !== 'azure_openai');
     }
     toggleProviderFields(savedProvider);
@@ -3703,6 +4205,12 @@ function showSettingsModal() {
         input.type = input.type === 'password' ? 'text' : 'password';
     });
 
+    // Toggle API key visibility — OpenAI
+    content.getElementById('toggleOpenAIKeyVisibility').addEventListener('click', () => {
+        const input = document.getElementById('settingOpenAIKey');
+        input.type = input.type === 'password' ? 'text' : 'password';
+    });
+
     // Toggle API key visibility — Azure
     content.getElementById('toggleAzureKeyVisibility').addEventListener('click', () => {
         const input = document.getElementById('settingAzureKey');
@@ -3713,6 +4221,8 @@ function showSettingsModal() {
         const name = document.getElementById('settingManagerName').value;
         const geminiKey = document.getElementById('settingGeminiKey').value.trim();
         const aiProvider = document.getElementById('settingAIProvider').value;
+        const openaiKey = document.getElementById('settingOpenAIKey').value.trim();
+        const openaiModel = document.getElementById('settingOpenAIModel').value;
         const azureEndpoint = document.getElementById('settingAzureEndpoint').value.trim();
         const azureKey = document.getElementById('settingAzureKey').value.trim();
         const azureDeployment = document.getElementById('settingAzureDeployment').value.trim();
@@ -3722,6 +4232,8 @@ function showSettingsModal() {
             manager_name: name,
             gemini_api_key: geminiKey,
             ai_provider: aiProvider,
+            openai_api_key: openaiKey,
+            openai_model: openaiModel,
             azure_endpoint: azureEndpoint,
             azure_api_key: azureKey,
             azure_deployment: azureDeployment,
